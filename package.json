@@ -1,0 +1,19 @@
+{
+	"name": "roguelike",
+	"uuid": "7f4a2d1e-6b8c-4c51-9e2a-1d3f6a7b8c90",
+	"private": true,
+	"type": "module",
+	"creator": { "version": "3.8.8" },
+	"scripts": {
+		"test": "tsx --test tests/domain/*.test.ts",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"check": "npm run typecheck && npm run lint && npm test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.4",
+		"@types/node": "^22.10.2",
+		"tsx": "^4.19.2",
+		"typescript": "^5.7.2"
+	}
+}
