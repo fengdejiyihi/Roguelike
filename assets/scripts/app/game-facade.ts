@@ -1,6 +1,7 @@
 import { CARDS } from "../domain/cards";
 import type { Command, RunState } from "../domain/model";
 import type { Effect } from "../domain/model";
+import type { DomainEvent, Status } from "../domain/model";
 import {
 	buy,
 	chooseEvent,
@@ -19,13 +20,22 @@ export type GameView = {
 	map: Array<{ id: string; type: string; enabled: boolean }>;
 	combat?: {
 		playerHp: number;
+		playerMaxHp: number;
 		playerBlock: number;
+		playerStatuses: Status[];
 		enemyHp: number;
+		enemyMaxHp: number;
+		enemyBlock: number;
+		enemyStatuses: Status[];
 		enemyId: string;
 		enemyName: string;
 		enemyIntentDamage: number;
 		hand: CardView[];
 		energy: number;
+		drawCount: number;
+		discardCount: number;
+		exhaustCount: number;
+		turn: number;
 	};
 	gold: number;
 	relics: string[];
@@ -46,6 +56,19 @@ export type CardView = {
 	name: string;
 	cost: number;
 	preview: string;
+	type: "attack" | "skill" | "tactic";
+	keywords: string[];
+	upgrade?: boolean;
+	rarity?: "common";
+	playable?: boolean;
+};
+export type CombatTransition = {
+	accepted: boolean;
+	before: GameView;
+	view: GameView;
+	after: GameView;
+	events: DomainEvent[];
+	reason?: string;
 };
 const preview = (effect: Effect): string => {
 	if (effect.kind === "damage")
@@ -64,14 +87,34 @@ export function cardView(instanceId: string): CardView {
 	const cardId = instanceId.split("#")[0];
 	const card = CARDS[cardId];
 	if (!card) throw new Error("unknown-card");
+	const keywords = Array.from(new Set(card.effects.flatMap(effectKinds)));
+	const type = card.effects.some((effect) =>
+		effectKinds(effect).includes("damage"),
+	)
+		? "attack"
+		: card.effects.some((effect) => effectKinds(effect).includes("block"))
+			? "skill"
+			: "tactic";
 	return {
 		instanceId,
 		cardId,
 		name: card.id,
 		cost: card.cost,
 		preview: card.effects.map(preview).join("; "),
+		type,
+		keywords,
 	};
 }
+const effectKinds = (effect: Effect): string[] => {
+	if (effect.kind === "sequence") return effect.effects.flatMap(effectKinds);
+	if (effect.kind === "if")
+		return [
+			effect.predicate,
+			...effect.then.flatMap(effectKinds),
+			...(effect.else ?? []).flatMap(effectKinds),
+		];
+	return [effect.kind];
+};
 export class GameFacade {
 	private run?: RunState;
 	private generation = 0;
@@ -109,6 +152,15 @@ export class GameFacade {
 	endTurn(): GameView {
 		return this.apply(combatCommand(this.require(), { type: "endTurn" }));
 	}
+	playCardTransition(
+		cardInstanceId: string,
+		targetId: string,
+	): CombatTransition {
+		return this.applyCombat({ type: "playCard", cardInstanceId, targetId });
+	}
+	endTurnTransition(): CombatTransition {
+		return this.applyCombat({ type: "endTurn" });
+	}
 	chooseReward(cardId?: string): GameView {
 		return this.apply(claimReward(this.require(), cardId));
 	}
@@ -138,19 +190,7 @@ export class GameFacade {
 				type: node.type,
 				enabled: next.includes(node.id),
 			})),
-			combat:
-				run.phase === "combat"
-					? {
-							playerHp: run.combat.player.hp,
-							playerBlock: run.combat.player.block,
-							enemyHp: run.combat.enemy.hp,
-							enemyId: run.combat.enemy.id,
-							enemyName: run.combat.enemyName,
-							enemyIntentDamage: run.combat.enemyIntentDamage,
-							hand: run.combat.hand.map(cardView),
-							energy: run.combat.energy,
-						}
-					: undefined,
+			combat: run.phase === "combat" ? this.combatView(run) : undefined,
 			reward: run.pendingReward
 				? {
 						cards: run.pendingReward.cards.map((cardId, index) =>
@@ -176,6 +216,55 @@ export class GameFacade {
 	private apply(result: { accepted: boolean; run: RunState }): GameView {
 		if (result.accepted) this.run = result.run;
 		return this.view();
+	}
+	private applyCombat(command: Command): CombatTransition {
+		const before = this.viewForCombat();
+		const result = combatCommand(this.require(), command);
+		if (result.accepted) this.run = result.run;
+		const after = this.view();
+		return {
+			accepted: result.accepted,
+			before,
+			view: this.viewForCombat(),
+			after,
+			events: result.events,
+			reason: result.reason,
+		};
+	}
+	private viewForCombat(): GameView {
+		const view = this.view();
+		return {
+			...view,
+			phase: "combat",
+			result: undefined,
+			reward: undefined,
+			combat: this.combatView(this.require()),
+		};
+	}
+	private combatView(run: RunState): NonNullable<GameView["combat"]> {
+		const combat = run.combat;
+		return {
+			playerHp: combat.player.hp,
+			playerMaxHp: combat.player.maxHp,
+			playerBlock: combat.player.block,
+			playerStatuses: combat.player.statuses.map((status) => ({ ...status })),
+			enemyHp: combat.enemy.hp,
+			enemyMaxHp: combat.enemy.maxHp,
+			enemyBlock: combat.enemy.block,
+			enemyStatuses: combat.enemy.statuses.map((status) => ({ ...status })),
+			enemyId: combat.enemy.id,
+			enemyName: combat.enemyName,
+			enemyIntentDamage: combat.enemyIntentDamage,
+			hand: combat.hand.map((instanceId) => {
+				const card = cardView(instanceId);
+				return { ...card, playable: card.cost <= combat.energy };
+			}),
+			energy: combat.energy,
+			drawCount: combat.draw.length,
+			discardCount: combat.discard.length,
+			exhaustCount: combat.exhaust.length,
+			turn: combat.turn,
+		};
 	}
 	private require(): RunState {
 		if (!this.run) throw new Error("run-not-started");

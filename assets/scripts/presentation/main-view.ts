@@ -1,17 +1,11 @@
+import { Button, Component, Label, Node, UITransform, _decorator } from "cc";
 import {
-	Button,
-	Color,
-	Component,
-	Graphics,
-	Label,
-	Node,
-	UIOpacity,
-	UITransform,
-	_decorator,
-	tween,
-} from "cc";
-import { type CardView, GameFacade, type GameView } from "../app/game-facade";
+	type CombatTransition,
+	GameFacade,
+	type GameView,
+} from "../app/game-facade";
 import { LocalSaveStorage } from "../platform/local-save";
+import { BattleView } from "./battle-view";
 
 const { ccclass } = _decorator;
 const ROW_HEIGHT = 35;
@@ -94,42 +88,24 @@ const ENEMY_LABELS: Record<string, { zh: string; en: string }> = {
 	Elite: { zh: "精英", en: "Elite" },
 	Boss: { zh: "首领", en: "Boss" },
 };
-const CARD_LABELS: Record<
-	string,
-	{ name: { zh: string; en: string }; preview: { zh: string; en: string } }
-> = {
+const CARD_LABELS: Record<string, { name: { zh: string; en: string } }> = {
 	strike: {
 		name: { zh: "打击", en: "Strike" },
-		preview: { zh: "对敌人造成 6 点伤害", en: "Damage enemy 6" },
 	},
 	guard: {
 		name: { zh: "守备", en: "Guard" },
-		preview: { zh: "获得 5 点格挡", en: "Gain 5 block" },
 	},
 	insight: {
 		name: { zh: "洞察", en: "Insight" },
-		preview: { zh: "抽 2 张牌", en: "Draw 2 cards" },
 	},
 	toxin: {
 		name: { zh: "毒液", en: "Toxin" },
-		preview: {
-			zh: "使敌人获得 2 层毒",
-			en: "Apply poison 2 to enemy",
-		},
 	},
 	doubleCut: {
 		name: { zh: "双斩", en: "Double Cut" },
-		preview: {
-			zh: "对敌人造成 3 点伤害两次",
-			en: "Deal 3 damage twice to enemy",
-		},
 	},
 	execute: {
 		name: { zh: "处决", en: "Execute" },
-		preview: {
-			zh: "如果目标有毒则对其造成 10 点伤害，否则造成 2 点伤害",
-			en: "If target has poison, damage enemy 10; otherwise damage enemy 2",
-		},
 	},
 };
 const RELIC_LABELS: Record<string, { zh: string; en: string }> = {
@@ -147,6 +123,8 @@ export class MainView extends Component {
 	private facade = new GameFacade(new LocalSaveStorage());
 	private locale: Locale = "zh";
 	private currentView?: GameView;
+	private selectedCardId?: string;
+	private combatBusy = false;
 	private cursor = 0;
 	private contentRoot = new Node("MainViewContent");
 
@@ -177,9 +155,10 @@ export class MainView extends Component {
 			this.render(this.currentView);
 		});
 		this.text(this.i18n("title"), 28);
-		this.button(this.i18n("newRun"), () =>
-			this.render(this.facade.newRun("phase-3-demo")),
-		);
+		this.button(this.i18n("newRun"), () => {
+			this.selectedCardId = undefined;
+			this.render(this.facade.newRun("phase-3-demo"));
+		});
 		this.button(this.i18n("save"), () => this.facade.save());
 		this.button(
 			this.i18n("resume"),
@@ -222,704 +201,78 @@ export class MainView extends Component {
 		}
 	}
 
-	private renderCombat(view: GameView): void {
-		const combat = view.combat!;
+	private renderCombat(
+		view: GameView,
+		events: CombatTransition["events"] = [],
+		after?: GameView,
+		before?: GameView,
+	): void {
+		this.combatBusy = events.length > 0;
+		this.contentRoot.removeAllChildren();
+		this.cursor = 0;
+		this.currentView = view;
 		const root = new Node("CombatConcept");
 		this.contentRoot.addChild(root);
 		root.layer = this.node.layer;
-		this.drawBackdrop(root);
-		this.combatTopBar(root, view);
-		this.combatPlayer(root, combat.playerHp, combat.playerBlock);
-		this.combatEnemy(
-			root,
-			combat.enemyName,
-			combat.enemyHp,
-			combat.enemyIntentDamage,
-		);
-		this.combatHand(root, combat.hand, combat.energy, combat.enemyId);
-		const opacity = root.addComponent(UIOpacity);
-		opacity.opacity = 0;
-		tween(opacity).to(0.22, { opacity: 255 }).start();
-	}
-
-	private drawBackdrop(parent: Node): void {
-		const back = this.graphics(parent, "Backdrop", 0, 0);
-		back.fillColor = this.color(8, 20, 36);
-		back.rect(-640, -360, 1280, 720);
-		back.fill();
-		this.sceneBand(parent, -190, 1280, 210, this.color(10, 43, 57));
-		this.sceneBand(parent, -275, 1280, 120, this.color(15, 62, 70));
-		const ridges = this.graphics(parent, "Ridges", 0, 0);
-		ridges.fillColor = this.color(14, 52, 66);
-		ridges.moveTo(-640, -205);
-		ridges.lineTo(-480, -120);
-		ridges.lineTo(-300, -185);
-		ridges.lineTo(-80, -110);
-		ridges.lineTo(130, -180);
-		ridges.lineTo(330, -125);
-		ridges.lineTo(500, -205);
-		ridges.lineTo(640, -155);
-		ridges.lineTo(640, -360);
-		ridges.lineTo(-640, -360);
-		ridges.close();
-		ridges.fill();
-		const glow = this.graphics(parent, "HorizonGlow", 0, 0);
-		glow.fillColor = this.color(30, 103, 108, 90);
-		glow.circle(0, -115, 190);
-		glow.fill();
-		const frame = this.graphics(parent, "DecorativeFrame", 0, 0);
-		frame.strokeColor = this.color(54, 95, 103);
-		frame.lineWidth = 4;
-		frame.rect(-624, -344, 1248, 688);
-		frame.strokeColor = this.color(25, 57, 70);
-		frame.lineWidth = 1;
-		frame.rect(-612, -332, 1224, 664);
-		frame.stroke();
-		frame.strokeColor = this.color(240, 177, 78, 180);
-		frame.lineWidth = 3;
-		frame.moveTo(-624, 275);
-		frame.lineTo(-594, 305);
-		frame.moveTo(624, 275);
-		frame.lineTo(594, 305);
-		frame.stroke();
-	}
-
-	private sceneBand(
-		parent: Node,
-		y: number,
-		width: number,
-		height: number,
-		fill: Color,
-	): void {
-		const band = this.graphics(parent, "SceneBand", 0, 0);
-		band.fillColor = fill;
-		band.rect(-width / 2, y - height / 2, width, height);
-		band.fill();
-	}
-
-	private combatTopBar(parent: Node, view: GameView): void {
-		const bar = this.panel(
-			parent,
-			"TopBar",
-			0,
-			315,
-			1180,
-			62,
-			this.color(13, 32, 49),
-			this.color(57, 104, 111),
-			14,
-		);
-		this.labelAt(
-			bar,
-			this.i18n("combatTitle"),
-			-455,
-			7,
-			260,
-			28,
-			20,
-			this.color(235, 220, 176),
-		);
-		this.labelAt(
-			bar,
-			this.i18n("battleCue"),
-			-455,
-			-15,
-			260,
-			18,
-			10,
-			this.color(111, 177, 175),
-		);
-		const relics = view.relics.length ? view.relics : ["none"];
-		relics.slice(0, 3).forEach((relic, index) => {
-			const chip = this.panel(
-				bar,
-				`RelicChip${index}`,
-				-228 + index * 108,
-				0,
-				96,
-				34,
-				this.color(24, 56, 65),
-				this.color(63, 126, 120),
-				10,
-			);
-			this.labelAt(
-				chip,
-				relic === "none" ? this.i18n("relicNone") : this.relicLabel(relic),
-				0,
-				0,
-				88,
-				28,
-				10,
-				this.color(183, 215, 195),
-			);
+		const battle = new BattleView(root, view, {
+			locale: this.locale,
+			selectedId: this.selectedCardId,
+			onCard: (id, target) => this.cardInput(id, target),
+			onEndTurn: () => this.endTurnInput(),
 		});
-		const topPhase = this.phaseLabel(view.phase);
-		this.labelAt(
-			bar,
-			`${this.i18n("runCue")} · ${this.locale === "en" ? topPhase.toUpperCase() : topPhase}`,
-			23,
-			6,
-			180,
-			24,
-			13,
-			this.color(220, 229, 211),
-		);
-		this.buttonAt(
-			bar,
-			this.i18n("save"),
-			465,
-			0,
-			86,
-			34,
-			() => this.facade.save(),
-			false,
-			this.color(26, 72, 76),
-			this.color(101, 183, 156),
-		);
-		this.buttonAt(
-			bar,
-			this.i18n("language"),
-			560,
-			0,
-			68,
-			34,
-			() => {
-				this.locale = this.locale === "zh" ? "en" : "zh";
-				this.render(this.currentView);
-			},
-			false,
-			this.color(30, 47, 61),
-			this.color(94, 135, 145),
-		);
-	}
-
-	private combatPlayer(parent: Node, hp: number, block: number): void {
-		const zone = this.panel(
-			parent,
-			"PlayerZone",
-			-345,
-			78,
-			360,
-			224,
-			this.color(12, 39, 55, 235),
-			this.color(47, 117, 123),
-			22,
-		);
-		this.labelAt(
-			zone,
-			this.i18n("vanguard"),
-			-116,
-			84,
-			124,
-			20,
-			11,
-			this.color(111, 193, 185),
-		);
-		this.labelAt(
-			zone,
-			this.i18n("playerHp"),
-			80,
-			82,
-			100,
-			18,
-			11,
-			this.color(137, 173, 171),
-		);
-		this.labelAt(
-			zone,
-			String(hp),
-			92,
-			50,
-			80,
-			40,
-			31,
-			this.color(231, 242, 218),
-		);
-		this.labelAt(
-			zone,
-			`${this.i18n("block")}  ${block}`,
-			82,
-			12,
-			112,
-			22,
-			13,
-			this.color(240, 177, 78),
-		);
-		this.labelAt(
-			zone,
-			this.i18n("status"),
-			0,
-			-91,
-			320,
-			19,
-			10,
-			this.color(99, 159, 163),
-		);
-		this.playerSilhouette(zone);
-	}
-
-	private playerSilhouette(parent: Node): void {
-		const art = this.graphics(parent, "PlayerSilhouette", -91, 12);
-		art.fillColor = this.color(43, 157, 157);
-		art.circle(0, 50, 20);
-		art.roundRect(-31, -42, 62, 82, 18);
-		art.fill();
-		art.fillColor = this.color(89, 205, 183, 150);
-		art.roundRect(24, -20, 44, 58, 12);
-		art.fill();
-		art.fillColor = this.color(240, 177, 78);
-		art.circle(47, 16, 9);
-		art.fill();
-	}
-
-	private combatEnemy(
-		parent: Node,
-		name: string,
-		hp: number,
-		intentDamage: number,
-	): void {
-		const intent = this.panel(
-			parent,
-			"EnemyIntent",
-			345,
-			238,
-			266,
-			58,
-			this.color(92, 25, 61),
-			this.color(221, 77, 112),
-			16,
-		);
-		this.labelAt(
-			intent,
-			this.i18n("intentCue"),
-			-44,
-			13,
-			145,
-			16,
-			10,
-			this.color(252, 177, 169),
-		);
-		this.labelAt(
-			intent,
-			`${this.i18n("attack")}  ${intentDamage}`,
-			61,
-			8,
-			76,
-			26,
-			21,
-			this.color(255, 229, 194),
-		);
-		const zone = this.panel(
-			parent,
-			"EnemyZone",
-			345,
-			84,
-			360,
-			224,
-			this.color(35, 31, 56, 240),
-			this.color(119, 70, 112),
-			22,
-		);
-		this.labelAt(
-			zone,
-			this.i18n("foe"),
-			-116,
-			84,
-			124,
-			20,
-			11,
-			this.color(224, 113, 143),
-		);
-		this.labelAt(
-			zone,
-			this.enemyLabel(name),
-			-20,
-			49,
-			172,
-			25,
-			20,
-			this.color(246, 226, 205),
-		);
-		this.labelAt(
-			zone,
-			`${this.i18n("enemyHp")}  ${hp}`,
-			0,
-			14,
-			270,
-			20,
-			13,
-			this.color(218, 166, 186),
-		);
-		this.labelAt(
-			zone,
-			this.i18n("status"),
-			0,
-			-91,
-			320,
-			19,
-			10,
-			this.color(159, 110, 146),
-		);
-		this.enemySilhouette(zone);
-	}
-
-	private enemySilhouette(parent: Node): void {
-		const art = this.graphics(parent, "EnemySilhouette", 100, -8);
-		art.fillColor = this.color(177, 46, 102);
-		art.circle(0, 48, 23);
-		art.moveTo(-50, -46);
-		art.lineTo(-31, 24);
-		art.lineTo(0, 8);
-		art.lineTo(31, 24);
-		art.lineTo(50, -46);
-		art.close();
-		art.fill();
-		art.fillColor = this.color(239, 93, 104, 190);
-		art.circle(-12, 51, 4);
-		art.circle(12, 51, 4);
-		art.fill();
-	}
-
-	private combatHand(
-		parent: Node,
-		cards: CardView[],
-		energy: number,
-		enemyId: string,
-	): void {
-		const hand = this.panel(
-			parent,
-			"HandArea",
-			0,
-			-248,
-			1180,
-			194,
-			this.color(9, 27, 42, 246),
-			this.color(43, 85, 96),
-			24,
-		);
-		this.labelAt(
-			hand,
-			this.i18n("hand"),
-			-532,
-			78,
-			90,
-			20,
-			11,
-			this.color(111, 177, 175),
-		);
-		this.labelAt(
-			hand,
-			`${this.i18n("energyShort")}  ${energy} / 3`,
-			-533,
-			-72,
-			130,
-			24,
-			17,
-			this.color(245, 190, 95),
-		);
-		this.energyPips(hand, energy);
-		this.buttonAt(
-			hand,
-			this.i18n("endTurn"),
-			518,
-			-4,
-			142,
-			52,
-			() => this.render(this.facade.endTurn()),
-			false,
-			this.color(160, 55, 76),
-			this.color(247, 143, 116),
-			16,
-		);
-		const cardWidth = cards.length > 5 ? Math.max(1, 760 / cards.length) : 166;
-		const step =
-			cards.length > 5
-				? cardWidth
-				: cards.length > 1
-					? Math.min(cardWidth + 13, 880 / (cards.length - 1))
-					: 0;
-		const start = -((cards.length - 1) * step) / 2;
-		cards.forEach((card, index) => {
-			const available = card.cost <= energy;
-			this.combatCard(
-				hand,
-				card,
-				start + index * step,
-				enemyId,
-				available,
-				index,
-				cardWidth,
-				cards.length,
+		if (events.length)
+			battle.showFeedback(
+				{
+					accepted: true,
+					before: before ?? view,
+					view,
+					after: after ?? view,
+					events,
+				},
+				() => {
+					this.combatBusy = false;
+					after && this.render(after);
+				},
 			);
-		});
 	}
 
-	private energyPips(parent: Node, energy: number): void {
-		const firstPipX = -500;
-		for (let index = 0; index < 3; index++) {
-			const pip = this.graphics(
-				parent,
-				`EnergyPip${index}`,
-				firstPipX + index * 22,
-				-49,
-			);
-			pip.fillColor =
-				index < energy ? this.color(240, 177, 78) : this.color(59, 77, 84);
-			pip.circle(0, 0, 7);
-			pip.fill();
+	private cardInput(cardId: string, targetId: string): void {
+		if (this.combatBusy) return;
+		if (this.selectedCardId !== cardId) {
+			this.selectedCardId = cardId;
+			this.render(this.currentView);
+			return;
 		}
-	}
-
-	private combatCard(
-		parent: Node,
-		card: CardView,
-		x: number,
-		enemyId: string,
-		available: boolean,
-		index: number,
-		width = 166,
-		total = 1,
-	): void {
-		const type = this.cardType(card.cardId);
-		const colors = this.cardColors(type, available);
-		const cardNode = this.panel(
-			parent,
-			`Card${index}`,
-			x,
-			1,
-			width,
-			158,
-			colors.fill,
-			colors.border,
-			16,
-		);
-		this.labelAt(cardNode, type, 0, 61, width - 20, 16, 9, colors.accent);
-		this.labelAt(
-			cardNode,
-			this.cardName(card),
-			-width * 0.07,
-			35,
-			width - 38,
-			25,
-			17,
-			colors.text,
-		);
-		const costX = -width / 2 + 22;
-		const cost = this.graphics(cardNode, "Cost", costX, 58);
-		cost.fillColor = colors.accent;
-		cost.circle(0, 0, 15);
-		cost.fill();
-		this.labelAt(
-			cardNode,
-			String(card.cost),
-			costX,
-			57,
-			24,
-			24,
-			14,
-			this.color(11, 27, 38),
-		);
-		this.labelAt(
-			cardNode,
-			this.wrapText(this.cardPreview(card), width),
-			0,
-			-8,
-			width - 28,
-			48,
-			11,
-			colors.text,
-		);
-		this.labelAt(
-			cardNode,
-			available ? this.i18n("playable") : this.i18n("unavailable"),
-			0,
-			-59,
-			width - 20,
-			17,
-			9,
-			colors.muted,
-		);
-		cardNode.setPosition(
-			x,
-			1 + Math.max(0, 10 - Math.abs(index - (total - 1) / 2) * 3),
-		);
-		const button = cardNode.addComponent(Button);
-		button.interactable = available;
-		if (available)
-			button.node.on(
-				Button.EventType.CLICK,
-				() => this.render(this.facade.playCard(card.instanceId, enemyId)),
-				this,
-			);
-		const fade = cardNode.addComponent(UIOpacity);
-		fade.opacity = 0;
-		tween(fade)
-			.delay(index * 0.045)
-			.to(0.18, { opacity: 255 })
-			.start();
-	}
-
-	private cardType(cardId: string): string {
-		if (["strike", "doubleCut", "execute"].includes(cardId))
-			return this.i18n("cardAttack");
-		if (["guard", "insight"].includes(cardId)) return this.i18n("cardSkill");
-		return this.i18n("cardTactic");
-	}
-
-	private cardColors(
-		type: string,
-		available: boolean,
-	): { fill: Color; border: Color; accent: Color; text: Color; muted: Color } {
-		const attack = type === this.i18n("cardAttack");
-		const skill = type === this.i18n("cardSkill");
-		const palette = attack
-			? [
-					this.color(64, 34, 48),
-					this.color(167, 71, 93),
-					this.color(245, 137, 111),
-				]
-			: skill
-				? [
-						this.color(22, 55, 65),
-						this.color(67, 144, 137),
-						this.color(116, 220, 186),
-					]
-				: [
-						this.color(68, 51, 31),
-						this.color(165, 125, 56),
-						this.color(245, 190, 95),
-					];
-		return {
-			fill: available ? palette[0] : this.color(26, 35, 43),
-			border: available ? palette[1] : this.color(65, 76, 80),
-			accent: available ? palette[2] : this.color(108, 121, 121),
-			text: available ? this.color(238, 239, 219) : this.color(137, 148, 146),
-			muted: available ? this.color(139, 182, 170) : this.color(101, 113, 112),
-		};
-	}
-
-	private cardName(card: CardView): string {
-		return CARD_LABELS[card.cardId]?.name?.[this.locale] ?? card.name;
-	}
-
-	private cardPreview(card: CardView): string {
-		return CARD_LABELS[card.cardId]?.preview?.[this.locale] ?? card.preview;
-	}
-
-	private wrapText(value: string, cardWidth: number): string {
-		const lines: string[] = [];
-		const widthLimit =
-			this.locale === "zh"
-				? Math.max(4, Math.min(12, Math.floor(cardWidth / 11)))
-				: Math.max(7, Math.min(22, Math.floor(cardWidth / 6)));
-		for (let index = 0; index < value.length; index += widthLimit)
-			lines.push(value.slice(index, index + widthLimit));
-		return lines.slice(0, 3).join("\n");
-	}
-
-	private color(red: number, green: number, blue: number, alpha = 255): Color {
-		return new Color(red, green, blue, alpha);
-	}
-
-	private graphics(parent: Node, name: string, x: number, y: number): Graphics {
-		const node = new Node(name);
-		parent.addChild(node);
-		node.layer = this.node.layer;
-		node.setPosition(x, y);
-		return node.addComponent(Graphics);
-	}
-
-	private panel(
-		parent: Node,
-		name: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		fill: Color,
-		stroke?: Color,
-		radius = 12,
-	): Node {
-		const node = new Node(name);
-		parent.addChild(node);
-		node.layer = this.node.layer;
-		node.setPosition(x, y);
-		const transform = node.addComponent(UITransform);
-		transform.setContentSize(width, height);
-		const shape = node.addComponent(Graphics);
-		shape.fillColor = fill;
-		shape.roundRect(-width / 2, -height / 2, width, height, radius);
-		shape.fill();
-		if (stroke) {
-			shape.strokeColor = stroke;
-			shape.lineWidth = 1;
-			shape.stroke();
+		this.selectedCardId = undefined;
+		const transition = this.facade.playCardTransition(cardId, targetId);
+		if (!transition.accepted) {
+			this.selectedCardId = cardId;
+			this.render(transition.view);
+			return;
 		}
-		return node;
-	}
-
-	private labelAt(
-		parent: Node,
-		value: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		size: number,
-		color: Color,
-	): void {
-		const node = new Node("Label");
-		parent.addChild(node);
-		node.layer = this.node.layer;
-		node.setPosition(x, y);
-		const transform = node.addComponent(UITransform);
-		transform.setContentSize(width, height);
-		const label = node.addComponent(Label);
-		label.string = value;
-		label.fontSize = size;
-		label.color = color;
-		label.lineHeight = Math.max(size + 4, 16);
-	}
-
-	private buttonAt(
-		parent: Node,
-		value: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		action: () => void,
-		disabled: boolean,
-		fill: Color,
-		stroke: Color,
-		radius = 10,
-	): void {
-		const node = this.panel(
-			parent,
-			"Button",
-			x,
-			y,
-			width,
-			height,
-			fill,
-			stroke,
-			radius,
+		this.renderCombat(
+			transition.view,
+			transition.events,
+			transition.after,
+			transition.before,
 		);
-		this.labelAt(
-			node,
-			value,
-			0,
-			0,
-			width - 10,
-			height - 6,
-			12,
-			this.color(242, 239, 216),
-		);
-		const button = node.addComponent(Button);
-		button.interactable = !disabled;
-		if (!disabled) button.node.on(Button.EventType.CLICK, action, this);
 	}
 
+	private endTurnInput(): void {
+		if (this.combatBusy) return;
+		this.selectedCardId = undefined;
+		const transition = this.facade.endTurnTransition();
+		if (!transition.accepted) {
+			this.render(transition.after);
+			return;
+		}
+		this.renderCombat(
+			transition.view,
+			transition.events,
+			transition.after,
+			transition.before,
+		);
+	}
 	private renderReward(view: GameView): void {
 		this.text(
 			`${this.i18n("reward")} (+${view.reward!.gold} ${this.i18n("goldLabel")})`,
@@ -983,9 +336,7 @@ export class MainView extends Component {
 		preview: string;
 	}): string {
 		const name = CARD_LABELS[card.cardId]?.name?.[this.locale] ?? card.name;
-		const preview =
-			CARD_LABELS[card.cardId]?.preview?.[this.locale] ?? card.preview;
-		return `${name} [${card.cost}] ${preview}`;
+		return `${name} [${card.cost}] ${card.preview}`;
 	}
 	private relicLabel(relicId: string): string {
 		return RELIC_LABELS[relicId]?.[this.locale] ?? relicId;

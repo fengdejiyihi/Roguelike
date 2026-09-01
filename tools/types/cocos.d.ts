@@ -6,15 +6,23 @@ declare module "cc" {
 		constructor(red?: number, green?: number, blue?: number, alpha?: number);
 	}
 	class Node {
-		static EventType: { TOUCH_END: string };
+		static EventType: {
+			TOUCH_END: string;
+			TOUCH_START: string;
+			MOUSE_ENTER: string;
+			MOUSE_LEAVE: string;
+		};
 		name: string;
 		layer: number;
 		constructor(name?: string);
 		addChild(child: Node): void;
 		removeAllChildren(): void;
+		getChildByName(name: string): Node | null;
+		getComponent<T>(type: new () => T): T | null;
 		addComponent<T>(type: new () => T): T;
 		on(event: string, callback: () => void, target?: unknown): void;
 		setPosition(x: number, y: number, z?: number): void;
+		setRotationFromEuler(x: number, y: number, z: number): void;
 	}
 	class Label {
 		string: string;
@@ -52,6 +60,7 @@ declare module "cc" {
 			}>,
 		): Tween<T>;
 		delay(duration: number): Tween;
+		call(callback: () => void): Tween<T>;
 		start(): Tween;
 	}
 	function tween<T extends object>(target: T): Tween<T>;

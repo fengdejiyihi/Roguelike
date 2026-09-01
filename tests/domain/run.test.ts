@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GameFacade, cardView } from "../../assets/scripts/app/game-facade";
+import {
+	type CombatTransition,
+	GameFacade,
+	cardView,
+} from "../../assets/scripts/app/game-facade";
 import { CARDS } from "../../assets/scripts/domain/cards";
 import { stateDigest } from "../../assets/scripts/domain/combat";
 import { legalNext } from "../../assets/scripts/domain/map";
@@ -263,6 +267,85 @@ test("GameFacade exposes the valid enemy target for card play", () => {
 			.combat?.hand.some((item) => item.instanceId === card.instanceId),
 		false,
 	);
+	game.newRun("keyword-projection");
+	const keywordNode = game
+		.view()
+		.map.find((node) => node.enabled && node.type === "combat");
+	assert.ok(keywordNode);
+	game.selectNode(keywordNode.id);
+	const keywordCombat = game.view().combat;
+	assert.ok(keywordCombat);
+	for (const projected of keywordCombat.hand) {
+		assert.ok(Array.isArray(projected.keywords));
+		assert.ok(
+			projected.keywords.every(
+				(keyword) => typeof keyword === "string" && keyword !== "[object Set]",
+			),
+		);
+	}
+});
+
+test("GameFacade combat transitions keep a battle projection before the next phase", () => {
+	const game = new GameFacade(new MemorySaveStorage());
+	const initial = game.newRun("transition");
+	const node = initial.map.find(
+		(item) => item.enabled && item.type === "combat",
+	);
+	assert.ok(node);
+	game.selectNode(node.id);
+	const combat = game.view().combat;
+	assert.ok(combat);
+	const card = combat.hand.find((item) => item.playable);
+	assert.ok(card);
+	const transition = game.playCardTransition(card.instanceId, combat.enemyId);
+	assert.equal(transition.accepted, true);
+	assert.equal(transition.view.phase, "combat");
+	assert.equal(transition.view.combat?.enemyHp, game.view().combat?.enemyHp);
+	assert.equal(transition.after.phase, "combat");
+	assert.ok(transition.events.some((event) => event.type === "CardPlayed"));
+});
+
+test("GameFacade terminal transitions retain battle snapshots before routing", () => {
+	const win = new GameFacade(new MemorySaveStorage());
+	const winStart = win.newRun("transition-win");
+	const winNode = winStart.map.find(
+		(item) => item.enabled && item.type === "combat",
+	);
+	assert.ok(winNode);
+	win.selectNode(winNode.id);
+	let victory: CombatTransition | undefined;
+	for (let step = 0; step < 80 && win.view().phase === "combat"; step += 1) {
+		const combat = win.view().combat!;
+		const card = combat.hand.find((item) => item.playable);
+		victory = card
+			? win.playCardTransition(card.instanceId, combat.enemyId)
+			: win.endTurnTransition();
+	}
+	assert.ok(victory);
+	assert.equal(
+		victory.events.some((event) => event.type === "CombatWon"),
+		true,
+	);
+	assert.equal(victory.view.phase, "combat");
+	assert.equal(victory.after.phase, "reward");
+
+	const lose = new GameFacade(new MemorySaveStorage());
+	const loseStart = lose.newRun("transition-lose");
+	const loseNode = loseStart.map.find(
+		(item) => item.enabled && item.type === "combat",
+	);
+	assert.ok(loseNode);
+	lose.selectNode(loseNode.id);
+	let defeat: CombatTransition | undefined;
+	for (let step = 0; step < 50 && lose.view().phase === "combat"; step += 1)
+		defeat = lose.endTurnTransition();
+	assert.ok(defeat);
+	assert.equal(
+		defeat.events.some((event) => event.type === "CombatLost"),
+		true,
+	);
+	assert.equal(defeat.view.phase, "combat");
+	assert.equal(defeat.after.phase, "lost");
 });
 
 test("GameFacade projects card effects, player resources, rewards, and shop names", () => {
