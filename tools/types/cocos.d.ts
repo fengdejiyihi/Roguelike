@@ -2,6 +2,9 @@ declare module "cc" {
 	class Component {
 		node: Node;
 	}
+	class Color {
+		constructor(red?: number, green?: number, blue?: number, alpha?: number);
+	}
 	class Node {
 		static EventType: { TOUCH_END: string };
 		name: string;
@@ -16,7 +19,42 @@ declare module "cc" {
 	class Label {
 		string: string;
 		fontSize: number;
+		color: Color;
+		lineHeight: number;
 	}
+	class Graphics {
+		fillColor: Color;
+		strokeColor: Color;
+		lineWidth: number;
+		rect(x: number, y: number, width: number, height: number): void;
+		roundRect(
+			x: number,
+			y: number,
+			width: number,
+			height: number,
+			radius: number,
+		): void;
+		circle(x: number, y: number, radius: number): void;
+		moveTo(x: number, y: number): void;
+		lineTo(x: number, y: number): void;
+		close(): void;
+		fill(): void;
+		stroke(): void;
+	}
+	class UIOpacity {
+		opacity: number;
+	}
+	interface Tween<T extends object = object> {
+		to(
+			duration: number,
+			properties: Partial<{
+				[key in keyof T as T[key] extends number ? key : never]: T[key];
+			}>,
+		): Tween<T>;
+		delay(duration: number): Tween;
+		start(): Tween;
+	}
+	function tween<T extends object>(target: T): Tween<T>;
 	class Button {
 		static EventType: { CLICK: string };
 		interactable: boolean;
