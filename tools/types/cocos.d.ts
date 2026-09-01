@@ -5,6 +5,7 @@ declare module "cc" {
 	class Node {
 		static EventType: { TOUCH_END: string };
 		name: string;
+		layer: number;
 		constructor(name?: string);
 		addChild(child: Node): void;
 		removeAllChildren(): void;
@@ -17,6 +18,7 @@ declare module "cc" {
 		fontSize: number;
 	}
 	class Button {
+		static EventType: { CLICK: string };
 		interactable: boolean;
 		node: Node;
 	}
