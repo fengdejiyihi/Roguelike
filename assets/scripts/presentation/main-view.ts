@@ -6,13 +6,21 @@ import {
 } from "../app/game-facade";
 import { LocalSaveStorage } from "../platform/local-save";
 import { BattleView } from "./battle-view";
+import { DeckView } from "./deck-view";
+import { type EventChoice, EventView } from "./event-view";
+import { MapView } from "./map-view";
+import { ResultView } from "./result-view";
+import { RewardView } from "./reward-view";
+import { type ShopFeedback, ShopView } from "./shop-view";
+import { pauseMenu, button as uiButton } from "./ui-kit";
 
 const { ccclass } = _decorator;
 const ROW_HEIGHT = 35;
 const CONTENT_HEIGHT = 33;
 type Locale = "zh" | "en";
+type DeckCategory = "all" | "attack" | "skill" | "tactic";
 const UI_TEXT: Record<string, { zh: string; en: string }> = {
-	title: { zh: "卡牌远征", en: "Card Expedition" },
+	title: { zh: "梦境之塔", en: "Tower of Dreams" },
 	newRun: { zh: "新游戏", en: "New Run" },
 	save: { zh: "保存", en: "Save" },
 	resume: { zh: "继续", en: "Resume" },
@@ -108,6 +116,17 @@ const CARD_LABELS: Record<string, { name: { zh: string; en: string } }> = {
 		name: { zh: "处决", en: "Execute" },
 	},
 };
+const CARD_EFFECT_LABELS: Record<string, { zh: string; en: string }> = {
+	strike: { zh: "对敌人造成 6 点伤害", en: "Deal 6 damage." },
+	guard: { zh: "获得 5 点格挡", en: "Gain 5 Block." },
+	insight: { zh: "抽 2 张牌", en: "Draw 2 cards." },
+	toxin: { zh: "施加 2 层中毒", en: "Apply 2 Poison." },
+	doubleCut: { zh: "造成 2 次 3 点伤害", en: "Deal 3 damage twice." },
+	execute: {
+		zh: "目标中毒时造成 10 点伤害，否则造成 2 点",
+		en: "Deal 10 damage if poisoned; otherwise 2.",
+	},
+};
 const RELIC_LABELS: Record<string, { zh: string; en: string }> = {
 	anchor: { zh: "锚", en: "Anchor" },
 	coinPurse: { zh: "钱袋", en: "Coin Purse" },
@@ -124,6 +143,13 @@ export class MainView extends Component {
 	private locale: Locale = "zh";
 	private currentView?: GameView;
 	private selectedCardId?: string;
+	private selectedRewardCardId?: string;
+	private selectedEventChoice?: "accept" | "skip";
+	private shopFeedback?: ShopFeedback;
+	private showingDeck = false;
+	private showingResultMap = false;
+	private deckCategory: DeckCategory = "all";
+	private selectedDeckCardId?: string;
 	private combatBusy = false;
 	private cursor = 0;
 	private contentRoot = new Node("MainViewContent");
@@ -146,8 +172,36 @@ export class MainView extends Component {
 		this.contentRoot.removeAllChildren();
 		this.cursor = 0;
 		this.currentView = view;
+		if (view && this.showingDeck) {
+			this.renderDeck(view);
+			return;
+		}
+		if (view?.result && this.showingResultMap) {
+			this.renderResultMap(view);
+			return;
+		}
 		if (view?.phase === "combat" && view.combat) {
 			this.renderCombat(view);
+			return;
+		}
+		if (view?.phase === "map") {
+			this.renderMapView(view);
+			return;
+		}
+		if (view?.phase === "reward" && view.reward) {
+			this.renderReward(view);
+			return;
+		}
+		if (view?.phase === "shop" && view.shop) {
+			this.renderShopView(view);
+			return;
+		}
+		if (view?.phase === "event" && view.event) {
+			this.renderEventView(view);
+			return;
+		}
+		if (view?.result) {
+			this.renderResultView(view);
 			return;
 		}
 		this.button(this.i18n("language"), () => {
@@ -157,12 +211,16 @@ export class MainView extends Component {
 		this.text(this.i18n("title"), 28);
 		this.button(this.i18n("newRun"), () => {
 			this.selectedCardId = undefined;
+			this.selectedRewardCardId = undefined;
 			this.render(this.facade.newRun("phase-3-demo"));
 		});
 		this.button(this.i18n("save"), () => this.facade.save());
 		this.button(
 			this.i18n("resume"),
-			() => this.render(this.tryResume()),
+			() => {
+				this.selectedRewardCardId = undefined;
+				this.render(this.tryResume());
+			},
 			!view,
 		);
 		if (!view) {
@@ -179,26 +237,26 @@ export class MainView extends Component {
 				`${this.i18n("currentNode")}: ${this.nodeIdLabel(view.currentNodeId)}`,
 				18,
 			);
-		if (view.phase === "map") this.renderMap(view);
-		if (view.phase === "reward" && view.reward) this.renderReward(view);
-		if (view.phase === "shop" && view.shop) this.renderShop(view);
-		if (view.phase === "event" && view.event) this.renderEvent(view);
-		if (view.result)
-			this.text(
-				view.result === "won" ? this.i18n("victory") : this.i18n("defeat"),
-				26,
-			);
 	}
 
-	private renderMap(view: GameView): void {
-		this.text(this.i18n("mapTitle"), 18);
-		for (const node of view.map.filter((item) => item.enabled)) {
-			this.button(
-				`${this.nodeIdLabel(node.id)} (${this.nodeTypeLabel(node.type)})`,
-				() => this.render(this.facade.selectNode(node.id)),
-				!node.enabled,
-			);
-		}
+	private renderMapView(view: GameView): void {
+		new MapView(this.contentRoot, view, {
+			locale: this.locale,
+			onLanguage: () => {
+				this.locale = this.locale === "zh" ? "en" : "zh";
+				this.render(this.currentView);
+			},
+			onNewRun: () => {
+				this.selectedCardId = undefined;
+				this.selectedRewardCardId = undefined;
+				this.render(this.facade.newRun("phase-3-demo"));
+			},
+			onSave: () => this.facade.save(),
+			onSelectNode: (id) => {
+				this.selectedRewardCardId = undefined;
+				this.render(this.facade.selectNode(id));
+			},
+		});
 	}
 
 	private renderCombat(
@@ -219,6 +277,17 @@ export class MainView extends Component {
 			selectedId: this.selectedCardId,
 			onCard: (id, target) => this.cardInput(id, target),
 			onEndTurn: () => this.endTurnInput(),
+			onLanguage: () => {
+				this.locale = this.locale === "zh" ? "en" : "zh";
+				this.render(this.currentView);
+			},
+			onSave: () => this.facade.save(),
+			onNewRun: () => {
+				this.selectedCardId = undefined;
+				this.selectedRewardCardId = undefined;
+				this.render(this.facade.newRun("phase-3-demo"));
+			},
+			canOpenMenu: () => !this.combatBusy,
 		});
 		if (events.length)
 			battle.showFeedback(
@@ -274,42 +343,199 @@ export class MainView extends Component {
 		);
 	}
 	private renderReward(view: GameView): void {
-		this.text(
-			`${this.i18n("reward")} (+${view.reward!.gold} ${this.i18n("goldLabel")})`,
-			18,
+		const reward = view.reward!;
+		new RewardView(this.contentRoot, view, reward, {
+			locale: this.locale,
+			selectedCardId: this.selectedRewardCardId,
+			onLanguage: () => {
+				this.locale = this.locale === "zh" ? "en" : "zh";
+				this.render(this.currentView);
+			},
+			onNewRun: () => {
+				this.selectedCardId = undefined;
+				this.selectedRewardCardId = undefined;
+				this.render(this.facade.newRun("phase-3-demo"));
+			},
+			onSave: () => this.facade.save(),
+			onSelectCard: (id) => {
+				this.selectedRewardCardId =
+					this.selectedRewardCardId === id ? undefined : id;
+				this.render(this.currentView);
+			},
+			onConfirm: (id) => {
+				this.selectedRewardCardId = undefined;
+				this.render(this.facade.chooseReward(id));
+			},
+			onSkip: () => {
+				this.selectedRewardCardId = undefined;
+				this.render(this.facade.skipReward());
+			},
+		});
+	}
+
+	private renderShopView(view: GameView): void {
+		new ShopView(this.contentRoot, view, {
+			locale: this.locale,
+			feedback: this.shopFeedback,
+			onBuy: (id) => {
+				const item = view.shop?.find((candidate) => candidate.id === id);
+				const transition = this.facade.buyTransition(id);
+				this.shopFeedback = transition.accepted
+					? { kind: "success" }
+					: { kind: item?.sold ? "sold" : "insufficient" };
+				this.render(transition.view);
+			},
+			onLeave: () => {
+				this.shopFeedback = undefined;
+				this.render(this.facade.leaveShop());
+			},
+		});
+		this.renderPageActions(view);
+	}
+
+	private renderEventView(view: GameView): void {
+		const choices: EventChoice[] = [
+			{
+				id: "accept",
+				zh: "接受",
+				en: "ACCEPT",
+				reward:
+					view.event === "shrine"
+						? this.locale === "zh"
+							? "恢复少量生命"
+							: "Recover some HP"
+						: this.locale === "zh"
+							? "获得金币"
+							: "Gain gold",
+			},
+			{
+				id: "skip",
+				zh: "离开",
+				en: "LEAVE",
+				risk: this.locale === "zh" ? "放弃事件收益" : "Forfeit the reward",
+			},
+		];
+		new EventView(this.contentRoot, view, {
+			locale: this.locale,
+			choices,
+			selectedChoiceId: this.selectedEventChoice,
+			onSelect: (id) => {
+				this.selectedEventChoice = id === "accept" ? "accept" : "skip";
+				this.render(view);
+			},
+			onConfirm: (id) => {
+				if (id !== "accept" && id !== "skip") return;
+				this.selectedEventChoice = undefined;
+				this.render(this.facade.chooseEvent(id));
+			},
+			onCancel: () => {
+				this.selectedEventChoice = undefined;
+				this.render(view);
+			},
+		});
+		this.renderPageActions(view);
+	}
+
+	private renderResultView(view: GameView): void {
+		new ResultView(this.contentRoot, view, {
+			locale: this.locale,
+			onMap: () => {
+				this.showingResultMap = true;
+				this.render(view);
+			},
+			onMenu: () => {
+				this.showingResultMap = false;
+				this.render();
+			},
+			onRestart: () => {
+				this.showingResultMap = false;
+				this.render(this.facade.newRun("phase-3-demo"));
+			},
+		});
+		this.renderPageActions(view);
+	}
+
+	private renderResultMap(view: GameView): void {
+		new MapView(
+			this.contentRoot,
+			{
+				...view,
+				map: view.map.map((node) => ({
+					...node,
+					next: [...node.next],
+					enabled: false,
+				})),
+			},
+			{
+				locale: this.locale,
+				onLanguage: () => {
+					this.locale = this.locale === "zh" ? "en" : "zh";
+					this.render(view);
+				},
+				onNewRun: () => this.render(this.facade.newRun("phase-3-demo")),
+				onSave: () => this.facade.save(),
+				onSelectNode: () => undefined,
+			},
 		);
-		for (const card of view.reward!.cards)
-			this.button(`${this.i18n("take")} ${this.cardLabel(card)}`, () =>
-				this.render(this.facade.chooseReward(card.cardId)),
-			);
-		this.button(this.i18n("skipReward"), () =>
-			this.render(this.facade.skipReward()),
+		uiButton(
+			this.contentRoot,
+			this.locale === "zh" ? "返回结算" : "BACK TO RESULT",
+			500,
+			-320,
+			150,
+			34,
+			() => {
+				this.showingResultMap = false;
+				this.render(view);
+			},
 		);
 	}
 
-	private renderShop(view: GameView): void {
-		this.text(this.i18n("shop"), 18);
-		for (const item of view.shop!)
-			this.button(
-				`${item.card ? `${this.cardLabel(item.card)} — ` : `${this.relicLabel(item.name)} — `}${this.i18n("price")}: ${item.price}${item.sold ? this.i18n("sold") : ""}`,
-				() => this.render(this.facade.buy(item.id)),
-				item.sold,
-			);
-		this.button(this.i18n("leaveShop"), () =>
-			this.render(this.facade.leaveShop()),
-		);
+	private renderDeck(view: GameView): void {
+		new DeckView(this.contentRoot, view, {
+			locale: this.locale,
+			category: this.deckCategory,
+			selectedCardId: this.selectedDeckCardId,
+			onSelectCard: (id) => {
+				this.selectedDeckCardId =
+					this.selectedDeckCardId === id ? undefined : id;
+				this.render(view);
+			},
+			onCategory: (category) => {
+				this.deckCategory = category;
+				this.selectedDeckCardId = undefined;
+				this.render(view);
+			},
+			onBack: () => {
+				this.showingDeck = false;
+				this.selectedDeckCardId = undefined;
+				this.render(view);
+			},
+		});
 	}
 
-	private renderEvent(view: GameView): void {
-		this.text(
-			`${this.i18n("event")}: ${this.eventLabel(view.event ?? "")}`,
-			18,
+	private renderPageActions(view: GameView): void {
+		uiButton(
+			this.contentRoot,
+			this.locale === "zh" ? "牌组" : "DECK",
+			-520,
+			315,
+			82,
+			30,
+			() => {
+				this.showingDeck = true;
+				this.render(view);
+			},
 		);
-		this.button(this.i18n("accept"), () =>
-			this.render(this.facade.chooseEvent("accept")),
-		);
-		this.button(this.i18n("skip"), () =>
-			this.render(this.facade.chooseEvent("skip")),
+		uiButton(this.contentRoot, "⚙", -455, 315, 36, 30, () =>
+			pauseMenu(this.contentRoot, this.locale, {
+				onLanguage: () => {
+					this.locale = this.locale === "zh" ? "en" : "zh";
+					this.render(view);
+				},
+				onSave: () => this.facade.save(),
+				onNewRun: () => this.render(this.facade.newRun("phase-3-demo")),
+			}),
 		);
 	}
 
@@ -333,10 +559,12 @@ export class MainView extends Component {
 		cardId: string;
 		name: string;
 		cost: number;
-		preview: string;
 	}): string {
 		const name = CARD_LABELS[card.cardId]?.name?.[this.locale] ?? card.name;
-		return `${name} [${card.cost}] ${card.preview}`;
+		const effect =
+			CARD_EFFECT_LABELS[card.cardId]?.[this.locale] ??
+			(this.locale === "zh" ? "施展一项行动" : "Perform an action.");
+		return `${name} [${card.cost}] ${effect}`;
 	}
 	private relicLabel(relicId: string): string {
 		return RELIC_LABELS[relicId]?.[this.locale] ?? relicId;

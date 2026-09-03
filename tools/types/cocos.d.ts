@@ -8,6 +8,7 @@ declare module "cc" {
 	class Node {
 		static EventType: {
 			TOUCH_END: string;
+			TOUCH_CANCEL: string;
 			TOUCH_START: string;
 			MOUSE_ENTER: string;
 			MOUSE_LEAVE: string;
@@ -17,11 +18,13 @@ declare module "cc" {
 		constructor(name?: string);
 		addChild(child: Node): void;
 		removeAllChildren(): void;
+		removeFromParent(): void;
 		getChildByName(name: string): Node | null;
 		getComponent<T>(type: new () => T): T | null;
 		addComponent<T>(type: new () => T): T;
 		on(event: string, callback: () => void, target?: unknown): void;
 		setPosition(x: number, y: number, z?: number): void;
+		setScale(x: number, y?: number, z?: number): void;
 		setRotationFromEuler(x: number, y: number, z: number): void;
 	}
 	class Label {
@@ -31,6 +34,7 @@ declare module "cc" {
 		lineHeight: number;
 	}
 	class Graphics {
+		node: Node;
 		fillColor: Color;
 		strokeColor: Color;
 		lineWidth: number;
@@ -53,6 +57,7 @@ declare module "cc" {
 		opacity: number;
 	}
 	interface Tween<T extends object = object> {
+		repeatForever(action: Tween<T>): Tween<T>;
 		to(
 			duration: number,
 			properties: Partial<{
@@ -69,6 +74,7 @@ declare module "cc" {
 		interactable: boolean;
 		node: Node;
 	}
+	class BlockInputEvents {}
 	class UITransform {
 		setContentSize(width: number, height: number): void;
 	}

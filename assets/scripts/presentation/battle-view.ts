@@ -1,5 +1,4 @@
 import {
-	Button,
 	Color,
 	Graphics,
 	Label,
@@ -8,11 +7,23 @@ import {
 	UITransform,
 	tween,
 } from "cc";
+import * as cc from "cc";
 import type { CombatTransition, GameView } from "../app/game-facade";
 import { HandView } from "./hand-view";
+import {
+	TOKENS,
+	button,
+	graphics,
+	healthBar,
+	label,
+	panel,
+	pauseMenu,
+	pulse,
+} from "./ui-kit";
 
 const ENEMY_LABELS: Record<string, { zh: string; en: string }> = {
 	Scout: { zh: "侦察兵", en: "Scout" },
+	Brute: { zh: "悍将", en: "Brute" },
 	Elite: { zh: "精英敌人", en: "Elite" },
 	Boss: { zh: "魔影首领", en: "Boss" },
 };
@@ -21,17 +32,83 @@ const RELIC_LABELS: Record<string, { zh: string; en: string }> = {
 	coinPurse: { zh: "钱袋", en: "Coin Purse" },
 	ironHeart: { zh: "钢铁之心", en: "Iron Heart" },
 };
+const STATUS_LABELS: Record<string, { zh: string; en: string }> = {
+	poison: { zh: "中毒", en: "Poison" },
+	spike: { zh: "尖刺", en: "Spikes" },
+	weak: { zh: "虚弱", en: "Weak" },
+	vulnerable: { zh: "易伤", en: "Vulnerable" },
+};
+
+const BATTLE_ASSETS = {
+	background: "art/battle/backgrounds/battle_bg_dream_forest_01/texture",
+	playerIdle: "art/battle/characters/player/player_idle/texture",
+	playerAttack: "art/battle/characters/player/player_attack/texture",
+	enemyIdle: "art/battle/characters/enemy/enemy_idle/texture",
+	enemyCast: "art/battle/characters/enemy/enemy_cast/texture",
+} as const;
+
+type SpriteComponent = {
+	spriteFrame: unknown;
+	sizeMode: unknown;
+};
+type CocosRuntime = typeof cc & {
+	resources: {
+		load: (
+			path: string,
+			type: unknown,
+			callback: (error: Error | null, asset?: unknown) => void,
+		) => void;
+	};
+	Texture2D: new () => unknown;
+	SpriteFrame: new () => { texture: unknown };
+	Sprite: {
+		new (): SpriteComponent;
+		SizeMode: { CUSTOM: unknown };
+	};
+};
+const cocos = cc as unknown as CocosRuntime;
+const spriteFrameLoads = new Map<string, Promise<unknown | undefined>>();
+const loadedSpriteFrames = new Map<string, unknown>();
+
+function loadSpriteFrame(path: string): Promise<unknown | undefined> {
+	const existing = spriteFrameLoads.get(path);
+	if (existing) return existing;
+	const loading = new Promise<unknown | undefined>((resolve) => {
+		try {
+			cocos.resources.load(path, cocos.Texture2D, (error, asset) => {
+				if (error || !asset) {
+					resolve(undefined);
+					return;
+				}
+				const frame = new cocos.SpriteFrame();
+				frame.texture = asset;
+				loadedSpriteFrames.set(path, frame);
+				resolve(frame);
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+	spriteFrameLoads.set(path, loading);
+	return loading;
+}
 
 export type BattleViewOptions = {
 	locale: "zh" | "en";
 	selectedId?: string;
 	onCard: (cardId: string, targetId: string) => void;
 	onEndTurn: () => void;
+	onLanguage: () => void;
+	onSave: () => void;
+	onNewRun: () => void;
+	canOpenMenu: () => boolean;
 };
 
 export class BattleView {
 	readonly node: Node;
 	private readonly locale: "zh" | "en";
+	private playerSprite?: SpriteComponent;
+	private enemySprite?: SpriteComponent;
 	constructor(parent: Node, view: GameView, options: BattleViewOptions) {
 		this.locale = options.locale;
 		this.node = new Node("BattleView");
@@ -39,10 +116,12 @@ export class BattleView {
 		this.node.layer = parent.layer;
 		this.background();
 		this.topHud(view, options);
-		this.playerPanel(view);
-		this.enemyPanels(view);
+		this.relicRail(view);
+		this.player(view);
+		this.enemy(view);
 		this.hand(view, options);
 	}
+
 	showFeedback(transition: CombatTransition, done?: () => void): void {
 		const combat = transition.view.combat;
 		if (!combat) {
@@ -53,50 +132,53 @@ export class BattleView {
 		if (before) {
 			const blockDelta = combat.playerBlock - before.playerBlock;
 			if (
-				blockDelta !== 0 &&
+				blockDelta &&
 				!transition.events.some((event) => event.type === "BlockGained")
 			)
-				this.floatingNumber(
+				this.floating(
 					`${blockDelta > 0 ? "+" : "−"}${Math.abs(blockDelta)}`,
-					-245,
-					70,
-					new Color(129, 213, 255),
+					-355,
+					115,
+					TOKENS.cyan,
 				);
 			const energyDelta = combat.energy - before.energy;
-			if (energyDelta !== 0)
-				this.floatingNumber(
+			if (energyDelta)
+				this.floating(
 					`⚡ ${energyDelta > 0 ? "+" : "−"}${Math.abs(energyDelta)}`,
-					-425,
-					-18,
-					new Color(255, 214, 123),
+					-470,
+					-294,
+					TOKENS.gold,
 				);
 		}
-		const delay = 0.28;
 		for (const event of transition.events) {
 			if (event.type === "DamageDealt") {
 				const detail = event.detail ?? "";
 				const split = detail.lastIndexOf(":");
 				const target = split < 0 ? detail : detail.slice(0, split);
 				const amount = split < 0 ? "0" : detail.slice(split + 1);
-				this.floatingNumber(
-					`${target === "player" ? "−" : "−"}${amount}`,
-					target === "player" ? -245 : 270,
-					118,
-					new Color(255, 132, 145),
+				this.floating(
+					`−${amount}`,
+					target === "player" ? -355 : 350,
+					108,
+					TOKENS.rose,
 				);
 				this.hitPulse(target === "player" ? "PlayerPanel" : "EnemyPanel");
-			} else if (event.type === "BlockGained") {
-				this.floatingNumber(
-					`+${event.detail ?? "0"}`,
-					-245,
-					70,
-					new Color(129, 213, 255),
-				);
-			} else if (event.type === "EnemyActed") {
+				if (target !== "player")
+					this.feedbackSprite(
+						this.playerSprite,
+						BATTLE_ASSETS.playerAttack,
+						BATTLE_ASSETS.playerIdle,
+					);
+			} else if (event.type === "BlockGained")
+				this.floating(`+${event.detail ?? "0"}`, -355, 115, TOKENS.cyan);
+			else if (event.type === "EnemyActed") {
 				this.intentPulse();
-			} else if (event.type === "TurnEnded") {
-				this.turnCue();
-			}
+				this.feedbackSprite(
+					this.enemySprite,
+					BATTLE_ASSETS.enemyCast,
+					BATTLE_ASSETS.enemyIdle,
+				);
+			} else if (event.type === "TurnEnded") this.turnCue();
 		}
 		if (
 			transition.events.some(
@@ -112,277 +194,416 @@ export class BattleView {
 		const fade = this.node.addComponent(UIOpacity);
 		fade.opacity = 255;
 		tween(fade)
-			.delay(delay)
+			.delay(0.28)
 			.to(0.12, { opacity: 245 })
 			.call(() => done?.())
 			.start();
 	}
+
 	private background(): void {
-		const back = this.graphics("DreamBackdrop");
-		back.fillColor = new Color(9, 11, 35);
+		const back = graphics(this.node, "DreamBackdrop");
+		back.fillColor = TOKENS.indigo;
 		back.rect(-640, -360, 1280, 720);
 		back.fill();
-		const mist = this.graphics("VioletMist", 0, -105);
-		mist.fillColor = new Color(63, 48, 112, 170);
-		mist.circle(0, 0, 250);
-		mist.fill();
-		const horizon = this.graphics("Horizon", 0, -180);
-		horizon.fillColor = new Color(24, 35, 78, 235);
-		horizon.moveTo(-640, 80);
-		horizon.lineTo(-450, 150);
-		horizon.lineTo(-250, 105);
-		horizon.lineTo(-55, 160);
-		horizon.lineTo(150, 95);
-		horizon.lineTo(360, 145);
-		horizon.lineTo(640, 90);
+		const artwork = new Node("DreamBackdropArtwork");
+		this.node.addChild(artwork);
+		artwork.layer = this.node.layer;
+		artwork.addComponent(UITransform).setContentSize(1280, 720);
+		const sprite = artwork.addComponent(cocos.Sprite);
+		sprite.sizeMode = cocos.Sprite.SizeMode.CUSTOM;
+		void loadSpriteFrame(BATTLE_ASSETS.background).then((frame) => {
+			if (frame) sprite.spriteFrame = frame;
+		});
+		const cloud = graphics(this.node, "DreamCloudHaze", 0, -30);
+		cloud.fillColor = new Color(67, 45, 128, 24);
+		cloud.moveTo(-640, 82);
+		cloud.lineTo(-430, 126);
+		cloud.lineTo(-210, 100);
+		cloud.lineTo(20, 138);
+		cloud.lineTo(260, 98);
+		cloud.lineTo(470, 128);
+		cloud.lineTo(640, 92);
+		cloud.lineTo(640, 38);
+		cloud.lineTo(420, 70);
+		cloud.lineTo(190, 48);
+		cloud.lineTo(-40, 80);
+		cloud.lineTo(-280, 42);
+		cloud.lineTo(-500, 72);
+		cloud.lineTo(-640, 46);
+		cloud.close();
+		cloud.fill();
+		const horizon = graphics(this.node, "PaperHorizon", 0, -182);
+		horizon.fillColor = new Color(24, 34, 78, 245);
+		horizon.moveTo(-640, 60);
+		horizon.lineTo(-430, 128);
+		horizon.lineTo(-210, 74);
+		horizon.lineTo(20, 142);
+		horizon.lineTo(260, 84);
+		horizon.lineTo(470, 132);
+		horizon.lineTo(640, 72);
 		horizon.lineTo(640, -180);
 		horizon.lineTo(-640, -180);
 		horizon.close();
 		horizon.fill();
-		const stars = this.graphics("Stars");
+		const stars = graphics(this.node, "Stars");
 		stars.fillColor = new Color(255, 223, 151, 190);
-		for (const [x, y, radius] of [
-			[-540, 205, 3],
-			[-410, 153, 2],
-			[-90, 246, 3],
-			[140, 190, 2],
-			[425, 238, 3],
-			[558, 126, 2],
-			[310, 152, 2],
-		] as number[][]) {
-			stars.circle(x, y, radius);
-		}
+		for (const [x, y, r] of [
+			[-540, 206, 3],
+			[-420, 154, 2],
+			[-92, 247, 3],
+			[132, 194, 2],
+			[430, 236, 3],
+			[556, 140, 2],
+			[302, 157, 2],
+		] as number[][])
+			stars.circle(x, y, r);
 		stars.fill();
-		const frame = this.graphics("Frame");
-		frame.strokeColor = new Color(112, 97, 165, 210);
+		const frame = graphics(this.node, "Frame");
+		frame.strokeColor = new Color(113, 94, 164, 200);
 		frame.lineWidth = 2;
 		frame.roundRect(-630, -350, 1260, 700, 20);
 		frame.stroke();
 	}
+
 	private topHud(view: GameView, options: BattleViewOptions): void {
-		const bar = this.panelIn(
+		const bar = panel(
 			this.node,
 			"GameHUD",
 			0,
 			312,
 			1200,
-			62,
-			new Color(17, 24, 57, 245),
-			new Color(101, 104, 170),
+			58,
+			new Color(15, 18, 49, 248),
+			new Color(105, 90, 157, 240),
+			14,
+			1.5,
 		);
-		const avatar = this.graphicsIn(bar, "Avatar", -554, 0);
-		avatar.fillColor = new Color(225, 190, 169);
-		avatar.circle(0, 5, 19);
+		const avatar = graphics(bar, "Avatar", -554, 0);
+		avatar.fillColor = new Color(231, 193, 170);
+		avatar.circle(0, 8, 16);
 		avatar.fill();
-		avatar.fillColor = new Color(81, 60, 112);
-		avatar.circle(-7, 8, 3);
-		avatar.circle(7, 8, 3);
+		avatar.fillColor = new Color(79, 53, 106);
+		avatar.circle(-6, 10, 3);
+		avatar.circle(6, 10, 3);
 		avatar.fill();
-		this.label(
+		label(
 			bar,
-			this.locale === "zh" ? "旅梦者" : "Dreamer",
-			-515,
-			12,
-			16,
-			new Color(250, 235, 205),
-			140,
+			this.locale === "zh" ? "旅梦者" : "CHARACTER",
+			-492,
+			8,
+			13,
+			TOKENS.paper,
+			110,
 		);
-		this.label(
+		label(
 			bar,
-			`♥ ${view.combat?.playerHp ?? 0}/${view.combat?.playerMaxHp ?? 0}`,
-			-515,
+			`${this.locale === "zh" ? "生命" : "HP"} ${view.combat?.playerHp ?? 0}/${view.combat?.playerMaxHp ?? 0}`,
+			-492,
 			-12,
-			12,
+			11,
 			new Color(255, 153, 166),
-			140,
+			110,
 		);
-		this.chip(
-			bar,
-			this.locale === "zh" ? "格挡" : "BLOCK",
-			-362,
-			0,
-			String(view.combat?.playerBlock ?? 0),
-			new Color(85, 179, 225),
-		);
-		this.chip(
+		this.hudChip(
 			bar,
 			this.locale === "zh" ? "金币" : "GOLD",
-			-242,
-			0,
 			String(view.gold),
-			new Color(255, 208, 106),
+			-245,
+			TOKENS.gold,
+		);
+		this.hudChip(
+			bar,
+			this.locale === "zh" ? "格挡" : "BLOCK",
+			String(view.combat?.playerBlock ?? 0),
+			-360,
+			TOKENS.cyan,
 		);
 		const relicText =
 			view.relics
 				.slice(0, 3)
-				.map((relic) => `✦ ${this.relicLabel(relic)}`)
-				.join("  ") || (this.locale === "zh" ? "暂无遗物" : "No relic");
-		this.label(bar, relicText, -95, 0, 11, new Color(201, 199, 241), 230);
-		this.label(
+				.map((id) => `✦ ${RELIC_LABELS[id]?.[this.locale] ?? id}`)
+				.join("  ") || (this.locale === "zh" ? "暂无遗物" : "NO RELICS");
+		label(bar, relicText, -70, 0, 10, TOKENS.muted, 245);
+		const currentRank = view.map.find(
+			(item) => item.id === view.currentNodeId,
+		)?.rank;
+		label(
 			bar,
-			`${this.locale === "zh" ? "节点" : "NODE"} ${view.currentNodeId ?? "—"}`,
-			258,
+			this.locale === "zh"
+				? `区域 · 第 ${(currentRank ?? 0) + 1} 幕`
+				: `AREA · ACT ${(currentRank ?? 0) + 1}`,
+			175,
+			0,
+			11,
+			TOKENS.gold,
+			160,
+		);
+		label(
+			bar,
+			this.locale === "zh" ? "梦境之塔" : "TOWER OF DREAMS",
+			380,
 			0,
 			12,
-			new Color(228, 217, 184),
-			135,
+			TOKENS.paper,
+			190,
 		);
-		this.button(
+		button(
 			bar,
 			"⚙",
-			535,
+			552,
 			0,
-			44,
-			38,
-			() => this.settingsToast(),
-			new Color(45, 42, 83),
-			new Color(191, 171, 117),
+			42,
+			34,
+			() => {
+				if (options.canOpenMenu()) pauseMenu(this.node, this.locale, options);
+			},
+			new Color(42, 36, 79),
+			TOKENS.gold,
+			16,
 		);
 	}
-	private playerPanel(view: GameView): void {
-		const combat = view.combat!;
-		const zone = this.panelIn(
+
+	private relicRail(view: GameView): void {
+		const rail = panel(
 			this.node,
-			"PlayerPanel",
-			-326,
-			78,
-			390,
-			230,
-			new Color(30, 43, 83, 232),
-			new Color(95, 132, 200),
-		);
-		this.label(
-			zone,
-			this.locale === "zh" ? "旅梦者" : "DREAMER",
-			-117,
-			88,
-			11,
-			new Color(150, 191, 237),
-			150,
-		);
-		this.mascot(zone, -92, 18, new Color(100, 179, 221));
-		this.label(
-			zone,
-			`${combat.playerHp}/${combat.playerMaxHp}`,
-			88,
+			"RelicRail",
+			-584,
+			145,
 			54,
-			22,
-			new Color(255, 239, 211),
-			120,
+			252,
+			new Color(12, 16, 44, 224),
+			new Color(91, 82, 143, 190),
+			14,
+			1,
 		);
-		this.healthBar(
-			zone,
-			88,
-			25,
-			180,
-			combat.playerHp,
-			combat.playerMaxHp,
-			new Color(92, 213, 170),
+		label(
+			rail,
+			this.locale === "zh" ? "遗物" : "RELICS",
+			0,
+			108,
+			8,
+			TOKENS.muted,
+			48,
 		);
-		this.label(
-			zone,
-			`${this.locale === "zh" ? "格挡" : "BLOCK"}  ${combat.playerBlock}`,
-			88,
-			-10,
-			13,
-			new Color(126, 213, 255),
-			150,
-		);
-		this.statuses(zone, combat.playerStatuses, -8, -87);
-	}
-	private enemyPanels(view: GameView): void {
-		const combat = view.combat!;
-		const enemies = [combat];
-		enemies.forEach((enemy, index) => {
-			const x = 345 + index * 210;
-			const zone = this.panelIn(
-				this.node,
-				"EnemyPanel",
-				x,
-				78,
-				390,
-				230,
-				new Color(49, 31, 78, 236),
-				new Color(166, 93, 157),
-			);
-			this.label(
-				zone,
-				this.locale === "zh" ? "敌对目标" : "HOSTILE",
-				-117,
-				88,
-				11,
-				new Color(240, 139, 174),
-				150,
-			);
-			this.mascot(zone, 95, 22, new Color(186, 83, 164));
-			this.label(
-				zone,
-				this.enemyLabel(enemy.enemyName),
-				-25,
-				55,
-				19,
-				new Color(255, 229, 209),
-				170,
-			);
-			this.label(
-				zone,
-				`${enemy.enemyHp}/${enemy.enemyMaxHp}`,
-				-20,
-				23,
-				16,
-				new Color(255, 196, 207),
-				115,
-			);
-			this.healthBar(
-				zone,
-				-20,
+		const ids = view.relics.length ? view.relics.slice(0, 4) : ["empty"];
+		ids.forEach((id, index) => {
+			const icon = graphics(rail, `RelicIcon:${id}`, 0, 70 - index * 43);
+			icon.fillColor = id === "empty" ? TOKENS.locked : TOKENS.violet;
+			icon.circle(0, 0, 14);
+			icon.fill();
+			icon.strokeColor = id === "empty" ? TOKENS.locked : TOKENS.gold;
+			icon.lineWidth = 1;
+			icon.circle(0, 0, 14);
+			icon.stroke();
+			label(
+				rail,
+				id === "empty" ? "·" : "✦",
 				0,
-				180,
-				enemy.enemyHp,
-				enemy.enemyMaxHp,
-				new Color(239, 108, 132),
-			);
-			this.label(
-				zone,
-				`${this.locale === "zh" ? "格挡" : "BLOCK"}  ${enemy.enemyBlock}`,
-				-20,
-				-30,
+				64 - index * 43,
 				12,
-				new Color(208, 167, 218),
-				130,
-			);
-			this.statuses(zone, enemy.enemyStatuses, 0, -87);
-			const intent = this.panelIn(
-				this.node,
-				"IntentView",
-				x,
-				218,
-				260,
-				54,
-				new Color(103, 39, 78, 245),
-				new Color(237, 132, 147),
-				16,
-			);
-			this.label(
-				intent,
-				this.locale === "zh" ? "预告伤害" : "INTENT",
-				-47,
-				3,
-				10,
-				new Color(255, 189, 186),
-				110,
-			);
-			this.label(
-				intent,
-				`⚔ ${enemy.enemyIntentDamage}`,
-				72,
-				0,
-				18,
-				new Color(255, 234, 206),
-				80,
+				id === "empty" ? TOKENS.muted : TOKENS.gold,
+				28,
 			);
 		});
 	}
+
+	private hudChip(
+		parent: Node,
+		title: string,
+		value: string,
+		x: number,
+		accent: Color,
+	): void {
+		const chip = panel(
+			parent,
+			"Chip",
+			x,
+			0,
+			104,
+			34,
+			new Color(28, 31, 70),
+			new Color(71, 75, 133),
+			9,
+			1,
+		);
+		label(chip, title, -22, 4, 8, accent, 42);
+		label(chip, value, 25, 0, 14, TOKENS.paper, 36);
+	}
+
+	private player(view: GameView): void {
+		const combat = view.combat!;
+		const zone = new Node("PlayerPanel");
+		this.node.addChild(zone);
+		zone.layer = this.node.layer;
+		zone.setPosition(-360, 86);
+		zone.addComponent(UITransform).setContentSize(240, 250);
+		this.playerSprite = this.figure(zone, -8, -4, false);
+		label(
+			zone,
+			this.locale === "zh" ? "旅梦者" : "DREAMER",
+			0,
+			117,
+			12,
+			new Color(190, 213, 244),
+			180,
+		);
+		label(
+			zone,
+			`${combat.playerHp}/${combat.playerMaxHp}`,
+			0,
+			-90,
+			18,
+			TOKENS.paper,
+			120,
+		);
+		healthBar(
+			zone,
+			0,
+			-112,
+			150,
+			combat.playerHp,
+			combat.playerMaxHp,
+			new Color(81, 211, 173),
+		);
+		label(
+			zone,
+			`${this.locale === "zh" ? "格挡" : "BLOCK"} ${combat.playerBlock}`,
+			0,
+			-133,
+			12,
+			TOKENS.cyan,
+			130,
+		);
+		this.statuses(zone, combat.playerStatuses, -2, -153);
+	}
+
+	private enemy(view: GameView): void {
+		const combat = view.combat!;
+		const zone = new Node("EnemyPanel");
+		this.node.addChild(zone);
+		zone.layer = this.node.layer;
+		zone.setPosition(360, 86);
+		zone.addComponent(UITransform).setContentSize(250, 250);
+		this.enemySprite = this.figure(zone, 0, 0, true);
+		label(
+			zone,
+			this.enemyLabel(combat.enemyName),
+			0,
+			117,
+			14,
+			new Color(255, 214, 218),
+			200,
+		);
+		label(
+			zone,
+			`${combat.enemyHp}/${combat.enemyMaxHp}`,
+			0,
+			-90,
+			18,
+			TOKENS.paper,
+			120,
+		);
+		healthBar(
+			zone,
+			0,
+			-112,
+			150,
+			combat.enemyHp,
+			combat.enemyMaxHp,
+			TOKENS.rose,
+		);
+		label(
+			zone,
+			`${this.locale === "zh" ? "格挡" : "BLOCK"} ${combat.enemyBlock}`,
+			0,
+			-133,
+			12,
+			new Color(220, 173, 226),
+			130,
+		);
+		this.statuses(zone, combat.enemyStatuses, 0, -153);
+		const intent = new Node("IntentView");
+		this.node.addChild(intent);
+		intent.layer = this.node.layer;
+		intent.setPosition(360, 225);
+		intent.addComponent(UITransform).setContentSize(180, 48);
+		label(
+			intent,
+			`⚔ ${combat.enemyIntentDamage} × 1`,
+			0,
+			0,
+			15,
+			new Color(255, 216, 191),
+			130,
+		);
+	}
+
+	private figure(
+		parent: Node,
+		x: number,
+		y: number,
+		enemy: boolean,
+	): SpriteComponent {
+		const artwork = new Node(enemy ? "EnemyPortrait" : "PlayerPortrait");
+		parent.addChild(artwork);
+		artwork.layer = parent.layer;
+		artwork.setPosition(x, y);
+		artwork.addComponent(UITransform).setContentSize(250, 220);
+		const sprite = artwork.addComponent(cocos.Sprite);
+		sprite.sizeMode = cocos.Sprite.SizeMode.CUSTOM;
+		const idle = enemy ? BATTLE_ASSETS.enemyIdle : BATTLE_ASSETS.playerIdle;
+		const action = enemy ? BATTLE_ASSETS.enemyCast : BATTLE_ASSETS.playerAttack;
+		void loadSpriteFrame(idle).then((frame) => {
+			if (frame) sprite.spriteFrame = frame;
+		});
+		void loadSpriteFrame(action);
+		const shadow = graphics(parent, "CharacterShadow", x, -55);
+		shadow.fillColor = new Color(6, 8, 27, 150);
+		shadow.roundRect(enemy ? -70 : -57, -5, enemy ? 140 : 114, 12, 6);
+		shadow.fill();
+		return sprite;
+	}
+
+	private feedbackSprite(
+		sprite: SpriteComponent | undefined,
+		action: string,
+		idle: string,
+	): void {
+		const actionFrame = loadedSpriteFrames.get(action);
+		const idleFrame = loadedSpriteFrames.get(idle);
+		if (!sprite || !actionFrame || !idleFrame) return;
+		sprite.spriteFrame = actionFrame;
+		setTimeout(() => {
+			if (sprite.spriteFrame === actionFrame) sprite.spriteFrame = idleFrame;
+		}, 180);
+	}
+
+	private statuses(
+		parent: Node,
+		statuses: Array<{ id: string; stacks: number }>,
+		x: number,
+		y: number,
+	): void {
+		label(
+			parent,
+			statuses.length
+				? statuses
+						.map(
+							(status) =>
+								`${STATUS_LABELS[status.id]?.[this.locale] ?? status.id} ${status.stacks}`,
+						)
+						.join("  ")
+				: this.locale === "zh"
+					? "状态：无"
+					: "STATUS: NONE",
+			x,
+			y,
+			10,
+			TOKENS.muted,
+			210,
+		);
+	}
+
 	private hand(view: GameView, options: BattleViewOptions): void {
 		const combat = view.combat!;
 		new HandView(this.node, combat.hand, combat.energy, {
@@ -390,142 +611,122 @@ export class BattleView {
 			selectedId: options.selectedId,
 			onSelect: (card) => options.onCard(card.instanceId, combat.enemyId),
 		});
-		const resources = this.panelIn(
+		const resources = panel(
 			this.node,
 			"ResourceBar",
 			0,
-			-326,
+			-329,
 			1200,
-			34,
-			new Color(12, 19, 47, 242),
-			new Color(74, 83, 138),
-			12,
+			38,
+			new Color(11, 15, 41, 246),
+			new Color(67, 70, 126),
+			11,
+			1,
 		);
-		this.label(
+		const energyOrb = graphics(resources, "EnergyOrb", -545, 0);
+		energyOrb.fillColor = new Color(45, 103, 143, 255);
+		energyOrb.circle(0, 0, 28);
+		energyOrb.fill();
+		energyOrb.strokeColor = TOKENS.cyan;
+		energyOrb.lineWidth = 2;
+		energyOrb.circle(0, 0, 28);
+		energyOrb.stroke();
+		label(resources, `${combat.energy}`, -545, 0, 18, TOKENS.paper, 44);
+		label(
+			resources,
+			this.locale === "zh" ? "能量" : "ENERGY",
+			-478,
+			7,
+			10,
+			TOKENS.gold,
+			80,
+		);
+		label(resources, `${combat.energy}/3`, -478, -8, 11, TOKENS.paper, 80);
+		for (let i = 0; i < 3; i++) {
+			const pip = graphics(resources, `Energy${i}`, -424 + i * 21, 0);
+			pip.fillColor = i < combat.energy ? TOKENS.gold : new Color(62, 67, 102);
+			pip.circle(0, 0, 6);
+			pip.fill();
+		}
+		label(
 			resources,
 			`◈ ${combat.drawCount}`,
-			-445,
+			-290,
 			0,
-			12,
-			new Color(194, 205, 239),
-			95,
+			10,
+			new Color(143, 150, 190),
+			80,
 		);
-		this.label(
+		label(
 			resources,
 			`◌ ${combat.discardCount}`,
-			-320,
-			0,
-			12,
-			new Color(194, 205, 239),
-			105,
-		);
-		this.label(
-			resources,
-			`✧ ${combat.exhaustCount}`,
 			-190,
 			0,
-			12,
-			new Color(194, 205, 239),
-			105,
+			10,
+			new Color(143, 150, 190),
+			95,
 		);
-		this.label(
+		label(
+			resources,
+			`✧ ${combat.exhaustCount}`,
+			-80,
+			0,
+			10,
+			new Color(143, 150, 190),
+			95,
+		);
+		for (const [x, value] of [
+			[35, this.locale === "zh" ? "◌ 状态" : "◌ STATUS"],
+			[120, this.locale === "zh" ? "✦ 遗物" : "✦ RELICS"],
+			[205, this.locale === "zh" ? "▤ 记录" : "▤ LOG"],
+		] as [number, string][]) {
+			label(resources, value, x, 0, 9, TOKENS.paper, 75);
+		}
+		label(
 			resources,
 			`${this.locale === "zh" ? "回合" : "TURN"} ${combat.turn}`,
-			210,
+			300,
 			0,
-			12,
-			new Color(195, 205, 239),
-			90,
+			10,
+			TOKENS.muted,
+			85,
 		);
-		this.button(
+		label(
+			resources,
+			`${this.locale === "zh" ? "弃牌" : "DISCARD"} ${combat.discardCount}`,
+			405,
+			0,
+			10,
+			TOKENS.muted,
+			100,
+		);
+		button(
 			resources,
 			this.locale === "zh" ? "结束回合" : "END TURN",
-			515,
+			510,
 			0,
-			145,
-			42,
+			150,
+			36,
 			options.onEndTurn,
-			new Color(128, 62, 113),
+			new Color(117, 53, 112),
 			new Color(248, 165, 119),
+			11,
 		);
 	}
-	private mascot(parent: Node, x: number, y: number, fill: Color): void {
-		const shape = this.graphicsIn(parent, "CharacterPlaceholder", x, y);
-		shape.fillColor = fill;
-		shape.circle(0, 38, 22);
-		shape.roundRect(-35, -38, 70, 78, 22);
-		shape.fill();
-		shape.fillColor = new Color(245, 226, 215, 220);
-		shape.circle(-8, 42, 4);
-		shape.circle(8, 42, 4);
-		shape.fill();
-	}
-	private statuses(
-		parent: Node,
-		statuses: Array<{ id: string; stacks: number }>,
-		x: number,
-		y: number,
-	): void {
-		const value = statuses.length
-			? statuses.map((status) => `${status.id} ${status.stacks}`).join("  ")
-			: this.locale === "zh"
-				? "状态：无"
-				: "STATUS: NONE";
-		this.label(parent, value, x, y, 10, new Color(190, 190, 224), 280);
-	}
-	private healthBar(
-		parent: Node,
-		x: number,
-		y: number,
-		width: number,
-		value: number,
-		max: number,
-		fill: Color,
-	): void {
-		const back = this.graphicsIn(parent, "HealthBar", x, y);
-		back.fillColor = new Color(23, 25, 48, 230);
-		back.roundRect(-width / 2, -7, width, 14, 7);
-		back.fill();
-		const ratio = Math.max(0, Math.min(1, max ? value / max : 0));
-		back.fillColor = fill;
-		back.roundRect(-width / 2, -7, width * ratio, 14, 7);
-		back.fill();
-	}
-	private chip(
-		parent: Node,
-		title: string,
-		x: number,
-		y: number,
-		value: string,
-		accent: Color,
-	): void {
-		const node = this.panelIn(
-			parent,
-			"Chip",
-			x,
-			y,
-			105,
-			38,
-			new Color(29, 37, 74),
-			new Color(70, 83, 138),
-			12,
-		);
-		this.label(node, title, -20, 6, 9, accent, 52);
-		this.label(node, value, 26, 0, 15, new Color(247, 239, 215), 40);
-	}
+
 	private resultOverlay(won: boolean, done?: () => void): void {
-		const overlay = this.panelIn(
+		const overlay = panel(
 			this.node,
 			"BattleResultOverlay",
 			0,
-			20,
-			480,
-			176,
-			won ? new Color(75, 57, 105, 248) : new Color(49, 39, 83, 250),
-			won ? new Color(255, 208, 114) : new Color(201, 124, 186),
-			24,
+			35,
+			430,
+			150,
+			won ? new Color(67, 51, 101, 250) : new Color(44, 37, 78, 250),
+			won ? TOKENS.gold : new Color(201, 124, 186),
+			22,
 		);
-		this.label(
+		label(
 			overlay,
 			won
 				? this.locale === "zh"
@@ -535,12 +736,12 @@ export class BattleView {
 					? "梦境破碎…"
 					: "DEFEAT…",
 			0,
-			42,
-			30,
+			39,
+			28,
 			won ? new Color(255, 222, 139) : new Color(239, 170, 218),
-			440,
+			390,
 		);
-		this.label(
+		label(
 			overlay,
 			won
 				? this.locale === "zh"
@@ -550,213 +751,56 @@ export class BattleView {
 					? "旅程暂告一段落"
 					: "THE DREAM FADES",
 			0,
-			4,
-			13,
-			new Color(245, 231, 218),
-			400,
+			2,
+			12,
+			TOKENS.paper,
+			380,
 		);
-		const continueButton = this.panelIn(
+		button(
 			overlay,
-			"ContinueButton",
-			0,
-			-58,
-			150,
-			34,
-			new Color(52, 49, 94),
-			new Color(220, 184, 130),
-			10,
-		);
-		this.label(
-			continueButton,
 			this.locale === "zh" ? "继续" : "CONTINUE",
 			0,
-			0,
-			12,
-			new Color(255, 244, 222),
+			-45,
 			140,
+			32,
+			() => done?.(),
+			new Color(50, 47, 90),
+			new Color(220, 184, 130),
+			11,
 		);
-		const continueAction = continueButton.addComponent(Button);
-		continueAction.interactable = true;
-		continueAction.node.on(Button.EventType.CLICK, () => done?.(), this);
-		const fade = overlay.addComponent(UIOpacity);
-		fade.opacity = 0;
-		tween(fade).to(0.18, { opacity: 255 }).start();
 	}
-	private settingsToast(): void {
-		const toast = this.panelIn(
-			this.node,
-			"SettingsToast",
-			0,
-			190,
-			310,
-			74,
-			new Color(35, 39, 78, 248),
-			new Color(191, 171, 117),
-			18,
-		);
-		this.label(
-			toast,
-			this.locale === "zh" ? "设置入口 · V1" : "SETTINGS · V1",
-			0,
-			8,
-			15,
-			new Color(255, 236, 198),
-			280,
-		);
-		this.label(
-			toast,
-			this.locale === "zh"
-				? "设置页将在后续阶段开放"
-				: "Settings page coming later",
-			0,
-			-16,
-			10,
-			new Color(194, 201, 232),
-			280,
-		);
-		const fade = toast.addComponent(UIOpacity);
-		fade.opacity = 255;
-		tween(fade).delay(1.1).to(0.25, { opacity: 0 }).start();
-	}
-	private floatingNumber(
-		value: string,
-		x: number,
-		y: number,
-		color: Color,
-	): void {
+
+	private floating(value: string, x: number, y: number, color: Color): void {
 		const node = new Node("FloatingNumber");
 		this.node.addChild(node);
 		node.layer = this.node.layer;
 		node.setPosition(x, y);
-		const transform = node.addComponent(UITransform);
-		transform.setContentSize(160, 38);
-		const label = node.addComponent(Label);
-		label.string = value;
-		label.fontSize = 25;
-		label.color = color;
+		node.addComponent(UITransform).setContentSize(150, 34);
+		const text = node.addComponent(Label);
+		text.string = value;
+		text.fontSize = 23;
+		text.color = color;
 		const opacity = node.addComponent(UIOpacity);
 		opacity.opacity = 255;
 		tween(opacity).delay(0.18).to(0.22, { opacity: 0 }).start();
 	}
 	private hitPulse(name: string): void {
 		const node = this.node.getChildByName(name);
-		if (!node) return;
-		const opacity =
-			node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
-		opacity.opacity = 255;
-		tween(opacity)
-			.to(0.08, { opacity: 130 })
-			.to(0.16, { opacity: 255 })
-			.start();
+		if (node) pulse(node, 130);
 	}
 	private intentPulse(): void {
 		const node = this.node.getChildByName("IntentView");
-		if (!node) return;
-		const opacity =
-			node.getComponent(UIOpacity) ?? node.addComponent(UIOpacity);
-		opacity.opacity = 255;
-		tween(opacity).to(0.1, { opacity: 120 }).to(0.16, { opacity: 255 }).start();
-	}
-	private enemyLabel(enemyId: string): string {
-		return ENEMY_LABELS[enemyId]?.[this.locale] ?? enemyId;
-	}
-	private relicLabel(relicId: string): string {
-		return RELIC_LABELS[relicId]?.[this.locale] ?? relicId;
+		if (node) pulse(node, 120);
 	}
 	private turnCue(): void {
-		this.floatingNumber(
+		this.floating(
 			this.locale === "zh" ? "敌方回合" : "ENEMY TURN",
 			0,
-			152,
-			new Color(255, 224, 163),
+			166,
+			TOKENS.gold,
 		);
 	}
-	private graphics(name: string, x = 0, y = 0): Graphics {
-		const node = new Node(name);
-		this.node.addChild(node);
-		node.layer = this.node.layer;
-		node.setPosition(x, y);
-		return node.addComponent(Graphics);
-	}
-	private graphicsIn(parent: Node, name: string, x = 0, y = 0): Graphics {
-		const node = new Node(name);
-		parent.addChild(node);
-		node.layer = this.node.layer;
-		node.setPosition(x, y);
-		return node.addComponent(Graphics);
-	}
-	private panelIn(
-		parent: Node,
-		name: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		fill: Color,
-		stroke: Color,
-		radius = 16,
-	): Node {
-		const node = new Node(name);
-		parent.addChild(node);
-		node.layer = parent.layer;
-		node.setPosition(x, y);
-		const transform = node.addComponent(UITransform);
-		transform.setContentSize(width, height);
-		const shape = node.addComponent(Graphics);
-		shape.fillColor = fill;
-		shape.roundRect(-width / 2, -height / 2, width, height, radius);
-		shape.fill();
-		shape.strokeColor = stroke;
-		shape.lineWidth = 2;
-		shape.stroke();
-		return node;
-	}
-	private label(
-		parent: Node,
-		value: string,
-		x: number,
-		y: number,
-		size: number,
-		color: Color,
-		width: number,
-	): void {
-		const node = new Node("Label");
-		parent.addChild(node);
-		node.layer = this.node.layer;
-		node.setPosition(x, y);
-		const transform = node.addComponent(UITransform);
-		transform.setContentSize(width, size + 10);
-		const label = node.addComponent(Label);
-		label.string = value;
-		label.fontSize = size;
-		label.lineHeight = size + 4;
-		label.color = color;
-	}
-	private button(
-		parent: Node,
-		value: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		action: () => void,
-		fill: Color,
-		stroke: Color,
-	): void {
-		const node = this.panelIn(
-			parent,
-			"Button",
-			x,
-			y,
-			width,
-			height,
-			fill,
-			stroke,
-			12,
-		);
-		this.label(node, value, 0, 0, 12, new Color(255, 244, 222), width - 8);
-		const button = node.addComponent(Button);
-		button.interactable = true;
-		button.node.on(Button.EventType.CLICK, action, this);
+	private enemyLabel(id: string): string {
+		return ENEMY_LABELS[id]?.[this.locale] ?? id;
 	}
 }

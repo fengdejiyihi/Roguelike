@@ -1,14 +1,14 @@
 # Current state
 
-- Date: 2026-09-01
-- Current phase: Phase 4B Battle UI V1 checkpoint COMPLETE，用户验收通过；完整 Phase 4B 与后续页面开发仍未开始。
-- Implemented: Cocos Creator 3.8.8 最小工程与 `MainView`；`GameFacade` 边界；9-rank 确定性 DAG；128 条合法路线到 Boss 胜/负；2 普通敌人、1 精英、1 Boss；奖励、商店、2 事件、3 遗物；A/B 本地存档、版本/结构/阶段不变量校验与损坏回退；Battle UI V1 正式战斗 HUD、可复用卡牌/手牌视图、最小战斗反馈、Victory/Defeat 与中英切换。
-- Test status: QA PASS：全部 30/30 tests、boundary、typecheck 与 lint 通过；Web/WeChat 产物和 7 张截图已核验。Reviewer Approve，无 P0–P2 findings。
+- Date: 2026-09-03
+- Current phase: Phase 4C.3 Roguelike Full Flow UI Framework 已通过 implementation、独立 QA、Reviewer 与 Brain acceptance；当前 STOP，等待人工审核，不进入 Phase 5。
+- Implemented: Cocos Creator 3.8.8 最小工程与 `MainView`；`GameFacade` 边界；9-rank 确定性 DAG；完整单局闭环与 A/B 本地存档；统一 DreamQuest Design System；Battle UI V2.1、正式 Map UI、Reward UI，以及 Event、Shop、Camp、Deck、Victory/Defeat 的可替换素材工程框架。Event/Shop/Deck/Result 已接入现有 GameFacade contract；Camp 因无 domain contract 保持显式禁用。
+- Test status: QA PASS；Reviewer Approve；Brain acceptance PASS。全部 33/33 tests、boundary、typecheck、lint 与 `git diff --check` 通过；Web/WeChat 构建产物已核验。
 - Boundary status: `assets/scripts/domain` 无 `Math.random()`、Cocos、`wx`、presentation/platform、Node/browser runtime 依赖；presentation 通过 `GameFacade` 交互，platform adapter 使用 `sys.localStorage`。
 - Typecheck/lint: `tsc --noEmit` 与 `biome check .` 通过。
-- Active tasks: STOP；Battle UI V1 checkpoint 已完成，不做完整 Phase 4B 或后续页面，等待用户下一指令。
-- Runtime status: Cocos Web 1280x720 仍为 0 error/warn，并具备 6 牌、damage/intent/victory/defeat 证据。Phase 4B WeChat build 已同步至用户实际目录 `/Users/zy/Desktop/wechatgame`，保留原有有效 AppID、`project.config.json` 与 private config；原桌面构建备份于 `/private/tmp/roguelike-desktop-wechatgame-backup.sO59XV/wechatgame`。用户开启微信开发者工具 Service Port 后，DevTools CLI `open` 成功；横屏实际显示 Battle UI V1，`main.scene` LoadScene 约 27 ms，用户明确回复“完成”，确认手动选牌、出牌与 End Turn 交互完成。Console 唯一红项为 WeChat Lib WAGame.js `[jsbridge] invoke getSystemInfo fail: jsbridge not ready`，黄色为 HarmonyOS 基础库提示，调用栈均非项目源码。
-- Blockers: None for the Battle UI V1 checkpoint；Service Port blocker 已清除。
-- Deferred risks: `Tween.delay()` shim 可进一步保留泛型 `T`；正式素材切图、动画、内容与数值平衡延后。
-- Working tree: Phase 3 baseline `1e730aa` 已提交并推送；Phase 4B Battle UI V1 实现与本 exit-gate 状态更新均未提交。
-- Next gate: STOP，等待用户下一指令；完整 Phase 4B 与后续页面均未开始。
+- Active tasks: STOP；Phase 4C.3 已完成，不继续新玩法、新内容或 Phase 5。
+- Runtime status: Cocos 3.8.8 Web Mobile 1280×720 冒烟验证覆盖 Event 选择/确认、Shop 购买失败/离开、Deck 分类/详情/返回、Result 只读地图/重新开始，Console 0 error/warn。微信小游戏构建成功且 `game.json` 为 landscape；本 checkpoint 未在微信开发者工具 GUI 中人工复验。
+- Blockers: Camp 缺少 RunPhase / GameFacade 命令；Shop 移除卡牌缺少正式 command。两项入口均保持禁用，未在 presentation 伪造规则。
+- Deferred risks: Event、Shop、Camp、Deck、Result 的正式视觉素材与进一步视觉优化等待独立 Art Pipeline 和人工审核。
+- Working tree: Phase 4C.3 closeout baseline 已提交并推送到 `origin/main`；Phase 4C.2 遗物奖励规则修订作为独立前置提交保留，未混入 UI commit。
+- Next gate: STOP，等待用户人工审核；不得自动进入 Phase 5。
