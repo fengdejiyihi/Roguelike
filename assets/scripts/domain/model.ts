@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = 1;
 export const CONTENT_VERSION = "phase-3-test";
-export const RULES_VERSION = "phase-3.0";
+export const RULES_VERSION = "phase-4c.2";
 export const MAX_TRIGGER_DEPTH = 32;
 export const MAX_RESOLUTION_STEPS = 1024;
 
@@ -72,6 +72,7 @@ export type Reward = {
 	id: string;
 	cards: string[];
 	gold: number;
+	relicId?: RelicId;
 	claimed: boolean;
 };
 export type ShopState = {

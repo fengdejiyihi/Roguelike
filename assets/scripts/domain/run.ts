@@ -147,29 +147,64 @@ function reward(run: RunState): Reward {
 		)[0];
 		chosen.push(card);
 	}
+	const node = run.map!.find((item) => item.id === run.currentNodeId);
+	const available =
+		node?.type === "elite" || node?.type === "boss"
+			? relics.filter((id) => !run.relics!.includes(id))
+			: [];
+	const relicId = available.length
+		? available[nextInt(run.rngStreams.rewardRng, available.length)]
+		: undefined;
 	return {
 		id: `reward:${run.currentNodeId}`,
 		cards: chosen,
 		gold: 15,
+		...(relicId ? { relicId } : {}),
 		claimed: false,
 	};
 }
 export function claimReward(run: RunState, cardId?: string): RunResult {
+	const nodeType = run.map?.find((item) => item.id === run.currentNodeId)?.type;
 	if (
 		run.phase !== "reward" ||
 		!run.pendingReward ||
 		run.pendingReward.claimed ||
-		(cardId !== undefined && !run.pendingReward.cards.includes(cardId))
+		(cardId !== undefined && !run.pendingReward.cards.includes(cardId)) ||
+		!validReward(run, nodeType)
 	)
 		return reject(run, "invalid-reward");
 	const draft = clone(run);
 	const reward = draft.pendingReward!;
 	if (cardId) draft.deck!.push(cardId);
 	draft.gold! += reward.gold;
+	if (reward.relicId && !draft.relics!.includes(reward.relicId)) {
+		draft.relics!.push(reward.relicId);
+		if (reward.relicId === "coinPurse") draft.gold! += 10;
+	}
 	reward.claimed = true;
 	draft.pendingReward = undefined;
 	draft.phase = nextPhase(draft);
 	return { accepted: true, run: draft };
+}
+function validReward(
+	run: RunState,
+	nodeType: MapNode["type"] | undefined,
+): boolean {
+	const reward = run.pendingReward!;
+	if (
+		reward.cards.length !== 3 ||
+		reward.gold !== 15 ||
+		new Set(reward.cards).size !== 3 ||
+		reward.cards.some((id) => !cards.includes(id))
+	)
+		return false;
+	const relicId = reward.relicId;
+	if (nodeType === "combat") return relicId === undefined;
+	if (nodeType !== "elite" && nodeType !== "boss") return false;
+	const hasAvailable = relics.some((id) => !run.relics!.includes(id));
+	return relicId === undefined
+		? !hasAvailable
+		: relics.includes(relicId) && !run.relics!.includes(relicId);
 }
 function shop(run: RunState): ShopState {
 	const order = [

@@ -131,6 +131,53 @@ test("save resume preserves pending reward and rejects duplicate claim without R
 	assert.equal(stateDigest(duplicate.run), stateDigest(left.run));
 });
 
+test("combat rewards grant relics only for elite and boss victories", () => {
+	const normal = win(next(newRun("normal-reward"), "combat"));
+	assert.equal(normal.pendingReward!.relicId, undefined);
+
+	const elite = win(next(newRun("elite-reward"), "elite"));
+	const relicId = elite.pendingReward!.relicId;
+	assert.ok(relicId);
+	assert.deepEqual(saved(elite).pendingReward, elite.pendingReward);
+	const storage = new MemorySaveStorage();
+	storage.save(serialize(elite));
+	assert.equal(new GameFacade(storage).resume()!.reward?.relicId, relicId);
+	for (const invalid of [
+		{
+			...elite,
+			pendingReward: { ...elite.pendingReward!, relicId: undefined },
+		},
+		{ ...elite, relics: [...elite.relics!, relicId] },
+	]) {
+		const digest = stateDigest(invalid);
+		const result = claimReward(invalid);
+		assert.equal(result.accepted, false);
+		assert.equal(stateDigest(result.run), digest);
+	}
+	const skipped = claimReward(elite);
+	assert.equal(skipped.accepted, true);
+	assert.equal(skipped.run.deck!.length, elite.deck!.length);
+	assert.ok(skipped.run.relics!.includes(relicId));
+	assert.equal(
+		skipped.run.gold,
+		elite.gold! + 15 + (relicId === "coinPurse" ? 10 : 0),
+	);
+	assert.equal(claimReward(skipped.run).accepted, false);
+
+	const selected = win(next(newRun("elite-selected"), "elite"));
+	const selectedCard = selected.pendingReward!.cards[0];
+	const selectedRelic = selected.pendingReward!.relicId!;
+	const claimed = claimReward(selected, selectedCard);
+	assert.ok(claimed.run.deck!.includes(selectedCard));
+	assert.ok(claimed.run.relics!.includes(selectedRelic));
+
+	const boss = win(
+		next(settle(win(next(newRun("boss-reward"), "elite"))), "boss"),
+	);
+	assert.ok(boss.pendingReward!.relicId);
+	assert.equal(claimReward(boss).run.phase, "won");
+});
+
 test("invalid reward and event values reject atomically instead of becoming skips", () => {
 	let reward = next(newRun("invalid-reward"), "combat");
 	reward = win(reward);
@@ -139,6 +186,34 @@ test("invalid reward and event values reject atomically instead of becoming skip
 		const result = claimReward(reward, cardId);
 		assert.equal(result.accepted, false);
 		assert.equal(stateDigest(result.run), rewardDigest);
+	}
+	const forgedRelic = {
+		...reward,
+		pendingReward: { ...reward.pendingReward!, relicId: "coinPurse" as const },
+	};
+	const forgedDigest = stateDigest(forgedRelic);
+	assert.equal(claimReward(forgedRelic).accepted, false);
+	assert.equal(stateDigest(forgedRelic), forgedDigest);
+	for (const pendingReward of [
+		{
+			...reward.pendingReward!,
+			cards: reward.pendingReward!.cards.slice(0, 2),
+		},
+		{
+			...reward.pendingReward!,
+			cards: ["strike", "strike", "guard"],
+		},
+		{
+			...reward.pendingReward!,
+			cards: ["strike#forged", "guard", "insight"],
+		},
+		{ ...reward.pendingReward!, gold: 14 },
+	]) {
+		const forged = { ...reward, pendingReward };
+		const digest = stateDigest(forged);
+		const result = claimReward(forged);
+		assert.equal(result.accepted, false);
+		assert.equal(stateDigest(result.run), digest);
 	}
 	const event = next(newRun("invalid-event"), "event");
 	const eventDigest = stateDigest(event);
@@ -285,6 +360,43 @@ test("GameFacade exposes the valid enemy target for card play", () => {
 	}
 });
 
+test("GameFacade projects map topology and keeps next arrays defensive", () => {
+	const game = new GameFacade(new MemorySaveStorage());
+	const initial = game.newRun("map-projection");
+	assert.equal(initial.map.length, 16);
+	const start = initial.map.find((node) => node.id === "start");
+	assert.ok(start);
+	assert.deepEqual(start.next, ["r1a", "r1b"]);
+	assert.equal(start.rank, 0);
+	assert.equal(start.visited, true);
+	assert.equal(start.enabled, false);
+	assert.equal(initial.playerHp, 40);
+	assert.equal(initial.playerMaxHp, 40);
+	for (const node of initial.map) {
+		assert.equal(node.next.includes(node.id), false);
+		assert.equal(node.enabled, start.next.includes(node.id));
+	}
+	start.next.push("mutated-view-value");
+	const fresh = game.view();
+	assert.deepEqual(fresh.map.find((node) => node.id === "start")?.next, [
+		"r1a",
+		"r1b",
+	]);
+	const selected = fresh.map.find((node) => node.enabled);
+	assert.ok(selected);
+	game.selectNode(selected.id);
+	const traversed = game.view();
+	assert.equal(traversed.currentNodeId, selected.id);
+	assert.equal(
+		traversed.map.find((node) => node.id === selected.id)?.visited,
+		true,
+	);
+	assert.equal(
+		traversed.map.filter((node) => node.enabled).length,
+		selected.next.length,
+	);
+});
+
 test("GameFacade combat transitions keep a battle projection before the next phase", () => {
 	const game = new GameFacade(new MemorySaveStorage());
 	const initial = game.newRun("transition");
@@ -368,6 +480,9 @@ test("GameFacade projects card effects, player resources, rewards, and shop name
 	const initial = game.newRun("view");
 	assert.equal(initial.gold, 104);
 	assert.deepEqual(initial.relics, ["anchor"]);
+	assert.equal(initial.deck.length, 10);
+	assert.equal(initial.visitedNodes, 1);
+	assert.deepEqual(initial.playerStatuses, []);
 	const combatNode = initial.map.find(
 		(node) => node.enabled && node.type === "combat",
 	)!;
@@ -396,11 +511,22 @@ test("GameFacade projects card effects, player resources, rewards, and shop name
 				(item) =>
 					item.name &&
 					item.price >= 0 &&
+					item.affordable === (!item.sold && game.view().gold >= item.price) &&
 					(!item.card ||
 						(item.card.cost === CARDS[item.card.cardId].cost &&
 							item.card.preview === cardView(item.card.instanceId).preview)),
 			),
 	);
+	const available = game.view().shop!.find((item) => !item.sold)!;
+	const purchased = game.buyTransition(available.id);
+	assert.equal(purchased.accepted, true);
+	assert.equal(
+		purchased.view.shop!.find((item) => item.id === available.id)?.sold,
+		true,
+	);
+	const duplicate = game.buyTransition(available.id);
+	assert.equal(duplicate.accepted, false);
+	assert.equal(duplicate.reason, "invalid-purchase");
 });
 
 test("relics apply anchor block, ironHeart healing, and coinPurse gold", () => {

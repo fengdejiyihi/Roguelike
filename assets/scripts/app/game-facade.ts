@@ -15,9 +15,19 @@ import { deserialize, serialize } from "../domain/save";
 import type { SaveStorage } from "../domain/save";
 
 export type GameView = {
+	readonly playerHp: number;
+	readonly playerMaxHp: number;
+	readonly playerStatuses: Status[];
 	phase?: string;
 	currentNodeId?: string;
-	map: Array<{ id: string; type: string; enabled: boolean }>;
+	map: Array<{
+		id: string;
+		rank: number;
+		type: string;
+		next: string[];
+		visited: boolean;
+		enabled: boolean;
+	}>;
 	combat?: {
 		playerHp: number;
 		playerMaxHp: number;
@@ -39,16 +49,24 @@ export type GameView = {
 	};
 	gold: number;
 	relics: string[];
-	reward?: { cards: CardView[]; gold: number };
+	deck: CardView[];
+	visitedNodes: number;
+	reward?: { cards: CardView[]; gold: number; relicId?: string };
 	shop?: {
 		id: string;
 		name: string;
 		price: number;
 		sold: boolean;
+		affordable: boolean;
 		card?: CardView;
 	}[];
 	event?: string;
 	result?: "won" | "lost";
+};
+export type RunActionTransition = {
+	accepted: boolean;
+	view: GameView;
+	reason?: string;
 };
 export type CardView = {
 	instanceId: string;
@@ -170,6 +188,15 @@ export class GameFacade {
 	buy(id: string): GameView {
 		return this.apply(buy(this.require(), id));
 	}
+	buyTransition(id: string): RunActionTransition {
+		const result = buy(this.require(), id);
+		if (result.accepted) this.run = result.run;
+		return {
+			accepted: result.accepted,
+			view: this.view(),
+			reason: result.reason,
+		};
+	}
 	leaveShop(): GameView {
 		return this.apply(leaveShop(this.require()));
 	}
@@ -184,10 +211,22 @@ export class GameFacade {
 			phase: run.phase,
 			currentNodeId: run.currentNodeId,
 			gold: run.gold ?? 0,
+			playerHp: run.combat.player.hp,
+			playerMaxHp: run.combat.player.maxHp,
+			playerStatuses: run.combat.player.statuses.map((status) => ({
+				...status,
+			})),
 			relics: [...(run.relics ?? [])],
+			deck: (run.deck ?? []).map((id, index) =>
+				cardView(`${id.split("#")[0]}#deck:${index}`),
+			),
+			visitedNodes: run.visited?.length ?? 0,
 			map: (run.map ?? []).map((node) => ({
 				id: node.id,
+				rank: node.rank,
 				type: node.type,
+				next: [...node.next],
+				visited: node.visited,
 				enabled: next.includes(node.id),
 			})),
 			combat: run.phase === "combat" ? this.combatView(run) : undefined,
@@ -197,6 +236,9 @@ export class GameFacade {
 							cardView(`${cardId}#reward:${run.pendingReward!.id}:${index}`),
 						),
 						gold: run.pendingReward.gold,
+						...(run.pendingReward.relicId
+							? { relicId: run.pendingReward.relicId }
+							: {}),
 					}
 				: undefined,
 			shop: run.shop?.inventory.map((item) => ({
@@ -204,6 +246,7 @@ export class GameFacade {
 				name: item.cardId ?? item.relicId ?? item.id,
 				price: item.price,
 				sold: item.sold,
+				affordable: !item.sold && (run.gold ?? 0) >= item.price,
 				card: item.cardId
 					? cardView(`${item.cardId}#shop:${item.id}`)
 					: undefined,

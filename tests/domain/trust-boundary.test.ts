@@ -46,6 +46,74 @@ test("save accepts supported roundtrips and rejects malformed or incompatible va
 	);
 });
 
+test("reward saves allow only unowned elite or boss relics", () => {
+	const run = newRun("relic-reward-save");
+	const elite = run.map!.find((node) => node.type === "elite")!;
+	const eliteRun = {
+		...run,
+		map: run.map!.map((node) =>
+			node.id === elite.id ? { ...node, visited: true } : node,
+		),
+		currentNodeId: elite.id,
+		visited: ["start", elite.id],
+	};
+	const victory = {
+		...eliteRun.combat,
+		phase: "Victory" as const,
+		enemy: { ...eliteRun.combat.enemy, hp: 0 },
+	};
+	const reward = {
+		...eliteRun,
+		phase: "reward" as const,
+		combat: victory,
+		pendingReward: {
+			id: "reward",
+			cards: ["strike", "guard", "insight"],
+			gold: 15,
+			relicId: "coinPurse" as const,
+			claimed: false,
+		},
+	};
+	assert.deepEqual(deserialize(serialize(reward)).payload, reward);
+	const combat = run.map!.find((node) => node.type === "combat")!;
+	const normalReward = {
+		...reward,
+		map: run.map!.map((node) =>
+			node.id === combat.id ? { ...node, visited: true } : node,
+		),
+		currentNodeId: combat.id,
+		visited: ["start", combat.id],
+	};
+	for (const malformed of [
+		{ ...reward, pendingReward: { ...reward.pendingReward, relicId: "bad" } },
+		{ ...reward, relics: ["anchor", "coinPurse"] },
+		normalReward,
+		{
+			...reward,
+			pendingReward: { ...reward.pendingReward, cards: ["strike"] },
+		},
+		{
+			...reward,
+			pendingReward: {
+				...reward.pendingReward,
+				cards: ["strike", "strike", "guard"],
+			},
+		},
+		{
+			...reward,
+			pendingReward: {
+				...reward.pendingReward,
+				cards: ["strike#forged", "guard", "insight"],
+			},
+		},
+		{ ...reward, pendingReward: { ...reward.pendingReward, gold: 14 } },
+	])
+		assert.throws(
+			() => deserialize(serialize(malformed as never)),
+			/invalid-save/,
+		);
+});
+
 test("checksum-valid saves reject malformed dereferenced combat, map, status, and shop fields", () => {
 	const run = newRun("shape");
 	for (const malformed of [
@@ -94,7 +162,12 @@ test("phase mutation matrix rejects 44 checksum-valid contradictory run states",
 		...active,
 		phase: "reward" as const,
 		combat: victoryCombat,
-		pendingReward: { id: "reward", cards: ["strike"], gold: 1, claimed: false },
+		pendingReward: {
+			id: "reward",
+			cards: ["strike", "guard", "insight"],
+			gold: 15,
+			claimed: false,
+		},
 	};
 	const visitedMap = (id: string) =>
 		map.map!.map((node) =>

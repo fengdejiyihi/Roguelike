@@ -239,9 +239,18 @@ function validPendingReward(value: unknown): boolean {
 	return (
 		typeof reward.id === "string" &&
 		Boolean(reward.id) &&
-		validCardInstances(reward.cards) &&
-		nonnegativeInteger(reward.gold) &&
+		validRewardCards(reward.cards) &&
+		reward.gold === 15 &&
+		(reward.relicId === undefined || validRelic(reward.relicId)) &&
 		typeof reward.claimed === "boolean"
+	);
+}
+function validRewardCards(value: unknown): boolean {
+	return (
+		Array.isArray(value) &&
+		value.length === 3 &&
+		new Set(value).size === value.length &&
+		value.every((card) => typeof card === "string" && Boolean(CARDS[card]))
 	);
 }
 function validShop(value: unknown): boolean {
@@ -321,6 +330,7 @@ function validPhaseState(
 			battle &&
 			Boolean(run.pendingReward) &&
 			!(run.pendingReward as Record<string, unknown>).claimed &&
+			validRewardRelic(run, node) &&
 			run.shop === undefined &&
 			run.event === undefined
 		);
@@ -345,6 +355,20 @@ function validPhaseState(
 	if (phase === "won")
 		return node?.type === "boss" && combat.phase === "Victory" && empty;
 	return battle && combat.phase === "Defeat" && empty;
+}
+function validRewardRelic(
+	run: Record<string, unknown>,
+	node: Record<string, unknown> | undefined,
+): boolean {
+	const relicId = (run.pendingReward as Record<string, unknown>).relicId;
+	const owned = run.relics as unknown[];
+	if (node?.type === "combat") return relicId === undefined;
+	const hasAvailable = ["anchor", "coinPurse", "ironHeart"].some(
+		(id) => !owned.includes(id),
+	);
+	return relicId === undefined
+		? !hasAvailable
+		: validRelic(relicId) && !owned.includes(relicId);
 }
 export class MemorySaveStorage implements SaveStorage {
 	private value: string | null = null;
